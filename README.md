@@ -2,8 +2,15 @@
 
 > **"상품 목록만 붙여넣으면, 5분 만에 당신의 가게가 AI 에이전트에게 물건을 파는 헤드리스 상점이 됩니다."**
 >
-> Google x Solana AI Agentic Hackathon 제출작.
+> Google x Solana AI Agentic Hackathon 제출작 — **트랙 B: Autonomous On-chain Settlement** (A·C 요소 결합).
 > 가맹점 → x402 결제 엔드포인트 자동 발급 + **판매자측 AP2 mandate 검증**(신뢰 레이어) + A2A 견적 교환 + Solana devnet USDC 정산.
+
+| 제출물 | 위치 |
+|---|---|
+| 🌐 라이브 데모 | https://jangbogo-748897460867.asia-northeast3.run.app |
+| 📽️ 데모 영상 (2:40) | `submission/장보고_데모.mp4` (YouTube 링크는 제출폼 참조) |
+| 📊 프로젝트 소개서 | [`submission/장보고_소개서.pdf`](submission/장보고_소개서.pdf) |
+| 📚 설계·QA 문서 | [`docs/00-CONTEXT.md`](docs/00-CONTEXT.md) ~ [`06-QA-REPORT.md`](docs/06-QA-REPORT.md) |
 
 ## 왜 장보고인가
 
