@@ -14,6 +14,32 @@
 
 ---
 
+## 한눈에 보기 — 자율 결제 + 판매자측 6단계 검증 (실시간)
+
+![verify-stepper](docs/img/05-verify-stepper.gif)
+
+> 에이전트가 견적을 비교해 온체인 결제를 마치는 순간, 가맹점의 결정론 정책 엔진이 서명→만료→범위→카트→예산→온체인 지불까지 6단계를 검증해 스텝퍼로 시각화한다. **사람 승인 0회.**
+
+## 심사 기준 대응표
+
+| 평가 기준 | 장보고의 대응 | 증빙 |
+|---|---|---|
+| **혁신성 / UX** | 경쟁작들이 구매자측 한도 지갑에 몰릴 때, 유일하게 **판매자측(가맹점 온보딩+검증)**을 공략. 코드 0줄 온보딩 + 검증 스텝퍼 시각화 | 위 GIF · [스크린샷](#스크린샷) |
+| **AI 활용도** | Gemini가 견적 비교·선택 사유 생성 (Cloud Run: **Vertex AI** `gemini-3-flash-preview`, 서비스 계정 인증). 단, 결제 승인은 LLM 불개입 — 이것이 설계의 핵심 | [`src/lib/llm.ts`](src/lib/llm.ts) |
+| **인프라 연동** | x402 스펙 준거 자체 구현 + Solana devnet USDC(SPL) 실전송 + AP2 준거 mandate + Cloud Run/Cloud Build | [`src/lib/x402.ts`](src/lib/x402.ts) · [`src/lib/chain.ts`](src/lib/chain.ts) |
+| **실제 구동** | devnet 실트랜잭션(Explorer Finalized) · 라이브 URL 상시 가동 · 실행 로그 스트리밍 | [tx 증빙](https://explorer.solana.com/tx/5yqKUxtroZiKAFfavT6sLZwgb9BuFxdP881vgtTKBBPPbrjezxoGyMFL4wZyzYYRDvBzxBA7qZTJp21hTNSVFPEq?cluster=devnet) · [라이브](https://jangbogo-748897460867.asia-northeast3.run.app) |
+
+## 정량 지표 (실측)
+
+| 지표 | 값 |
+|---|---|
+| 자율 조달 풀사이클 (견적 비교→결제→서명 영수증) | **4.7 ~ 10.5초** (사람 승인 0회) |
+| 온체인 확정 | Solana devnet ~400ms · 트랜잭션 수수료 ◎0.000005 |
+| 테스트 | **단위 11 + 통합 20 = 31/31 통과** |
+| 차단 검증된 공격/오류 | **5종** — 예산 초과 · 만료 위임장 · 범위 밖 · 과소지불 · 리플레이 |
+| 애플리케이션 코드 | TypeScript 약 2,000줄 (프레임워크 보일러플레이트 제외) |
+| 플랫폼 수수료 | 0.5% (자동 정산 원장 집계 구현) |
+
 ## 스크린샷
 
 | 자율 구매 + 판매자측 6단계 검증 스텝퍼 | 네거티브: 예산 초과를 결제 전에 차단 |
@@ -56,6 +82,49 @@ flowchart LR
 | 6 | **온체인 지불 일치** (금액·수취인·memo=nonce·리플레이) | `PAYMENT_*` |
 
 1~5는 **결제가 일어나기 전**에, 6은 온체인 검증 단계에서 거절된다. 전 과정이 UI 스텝퍼로 시각화된다.
+
+## 실제 구동 증빙 — 온체인에 이렇게 기록된다
+
+영상 속 결제의 실제 devnet 트랜잭션. **TransferChecked 65.51724 USDC + Memo에 주문 nonce**가 박혀 주문↔결제가 1:1로 묶인다:
+
+![explorer](docs/img/06-explorer-tx.png)
+
+### x402 결제 플로우 (시퀀스)
+
+```mermaid
+sequenceDiagram
+    participant A as 🤖 구매 에이전트
+    participant G as ⛵ 가맹점 게이트웨이
+    participant S as ◎ Solana Devnet
+    A->>G: POST /buy {cart, mandates(intent+cart)}
+    Note over G: 정책 1~5단계 프리체크<br/>(위반 시 402 없이 403 → 자금 미이동)
+    G-->>A: 402 Payment Required {asset, amount, payTo, nonce}
+    A->>S: USDC TransferChecked (memo = nonce) 직접 서명
+    S-->>A: tx signature
+    A->>G: POST /buy + X-PAYMENT {signature, nonce}
+    G->>S: getParsedTransaction — 금액·수취인·memo 대조
+    Note over G: 6단계 통과 → 재고 차감·예산 집행 기록
+    G-->>A: 200 {order, 머천트 서명 영수증, verification[6]}
+```
+
+라이브 서비스의 **실제 402 응답** (2026-08-04 캡처):
+
+```json
+{
+  "x402Version": 1,
+  "error": "payment_required",
+  "accepts": [{
+    "scheme": "exact",
+    "network": "solana-devnet",
+    "asset": "8VTrHAV23qKjjCoE8CZ7KhaCWP6znAikKgb8yoKpA6AD",
+    "amount": "13.103448",
+    "payTo": "GmEnSNf7QQ1E5QDPcTopV5zxmYodVhB7m7DSQHpSbL9b",
+    "nonce": "ord_msdd4t0evq2o4f",
+    "memo": "ord_msdd4t0evq2o4f",
+    "expiresInSec": 300
+  }]
+}
+```
 
 ## 빠른 시작 (로컬 재현)
 
