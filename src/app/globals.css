@@ -1,7 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --jb-blue: #3182f6;
+  --sol-purple: #9945ff;
+  --sol-green: #14f195;
 }
 
 html {
@@ -10,10 +11,73 @@ html {
 }
 
 body {
-  background: #f2f4f6;
-  color: #191f28;
+  background: #070a14;
+  background-image:
+    radial-gradient(ellipse 60% 40% at 20% -10%, rgba(153, 69, 255, 0.18), transparent),
+    radial-gradient(ellipse 50% 35% at 85% -5%, rgba(20, 241, 149, 0.08), transparent);
+  background-attachment: fixed;
+  color: #e6eaf2;
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.card {
+  background: rgba(18, 24, 41, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 1rem;
+}
+
+.grad-text {
+  background: linear-gradient(90deg, #9945ff, #14f195);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #9945ff, #6d28d9);
+  box-shadow: 0 4px 24px rgba(153, 69, 255, 0.35);
+  transition: filter 0.15s, transform 0.1s;
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.btn-primary:active {
+  transform: scale(0.99);
+}
+
+.input-dark {
+  background: #0d1322;
+  border: 1px solid #232b3f;
+  color: #e6eaf2;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.input-dark:focus {
+  border-color: var(--sol-purple);
+}
+.input-dark::placeholder {
+  color: #4a5368;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3350;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes stepIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.step-row {
+  animation: stepIn 0.35s ease both;
 }

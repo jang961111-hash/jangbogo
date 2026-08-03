@@ -135,8 +135,26 @@ export async function POST(
   // 머천트 서명 영수증 — 부인 불가능성
   const receiptBody = { orderId: order.id, totalMicro: order.totalMicro, txSig: order.txSig };
   const receiptSig = signPayload(receiptBody, merchant.walletSecretB58);
+
+  // 검증 6단계 통과 내역 — UI 스텝퍼 시각화용
+  const usd = (m: number) => (m / 1e6).toFixed(2);
+  const verification = [
+    { label: "위임장·카트 서명 검증 (ed25519)", detail: "principal·agent 서명 유효" },
+    { label: "위임 유효기간", detail: `만료 ${new Date(intent.expiresAt).toLocaleString("ko-KR")}` },
+    { label: "위임 범위(카테고리)", detail: `[${intent.scopeCategories.join(", ")}] 내 구매` },
+    { label: "카트 정합성 (단가·재고)", detail: "판매가 일치 · 재고 충족" },
+    {
+      label: "예산 한도 집행",
+      detail: `누적 ${usd(spentMicro)} + 이번 ${usd(cartMandate.totalMicro)} ≤ 예산 ${usd(intent.budgetMicro)} USDC`,
+    },
+    {
+      label: "온체인 지불 검증",
+      detail: `${usd(pending.totalMicro)} USDC · 수취인·금액·memo(nonce) 일치 · 리플레이 차단`,
+    },
+  ];
   return NextResponse.json({
     order,
     receipt: { ...receiptBody, merchantPubB58: merchant.walletPubB58, sigB58: receiptSig },
+    verification,
   });
 }

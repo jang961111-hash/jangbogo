@@ -25,9 +25,14 @@ interface AppState {
   agentWallet: { pubB58: string; usdcMicro: number } | null;
   merchants: Merchant[]; orders: Order[]; ledger: Ledger[];
 }
+interface VerifyStep { label: string; detail?: string }
 interface LogEvent {
   step: string; level: "info" | "success" | "error" | "warn"; message: string;
-  data?: { explorerUrl?: string };
+  data?: {
+    explorerUrl?: string;
+    verification?: VerifyStep[];
+    error?: { code?: string; message?: string; detail?: string };
+  };
 }
 
 const usdc = (micro: number) =>
@@ -35,15 +40,70 @@ const usdc = (micro: number) =>
 const krw = (n: number) => n.toLocaleString("ko-KR");
 
 const LEVEL_STYLE: Record<LogEvent["level"], string> = {
-  info: "text-slate-600",
-  success: "text-emerald-700 font-medium",
-  error: "text-rose-600 font-medium",
-  warn: "text-amber-600",
+  info: "text-slate-300",
+  success: "text-[#14f195] font-medium",
+  error: "text-rose-400 font-medium",
+  warn: "text-amber-300",
 };
 const STEP_ICON: Record<string, string> = {
   setup: "⚙️", mandate_issued: "📜", discover: "🔍", quote: "💬", decide: "🧠",
   pay: "💸", x402: "🔁", blocked: "🛡️", receipt: "🧾", done: "🏁",
 };
+
+/* 검증 6단계 — 실패 코드 → 단계 인덱스 매핑 */
+const VERIFY_LABELS = [
+  "위임장·카트 서명 검증 (ed25519)",
+  "위임 유효기간",
+  "위임 범위(카테고리)",
+  "카트 정합성 (단가·재고)",
+  "예산 한도 집행",
+  "온체인 지불 검증",
+];
+function failIdxOf(code?: string): number {
+  if (!code) return -1;
+  if (code.startsWith("MANDATE_INTENT_SIG") || code.startsWith("MANDATE_CART_SIG") || code === "MANDATE_HASH_MISMATCH") return 0;
+  if (code === "MANDATE_EXPIRED") return 1;
+  if (code === "MANDATE_SCOPE_VIOLATION") return 2;
+  if (code.startsWith("CART_")) return 3;
+  if (code === "MANDATE_BUDGET_EXCEEDED") return 4;
+  if (code.startsWith("PAYMENT_")) return 5;
+  return -1;
+}
+
+function VerifyCard(props: { steps?: VerifyStep[]; failIdx?: number; failDetail?: string }) {
+  const { steps, failIdx = -1, failDetail } = props;
+  const rows: VerifyStep[] = steps ?? VERIFY_LABELS.map((label) => ({ label }));
+  return (
+    <div className="my-2 ml-7 rounded-xl border border-white/10 bg-[#0a0f1e] p-3">
+      <p className="mb-2 text-[11px] font-bold tracking-wide text-slate-400">
+        🛡️ 판매자측 결정론 검증 — {failIdx < 0 ? "6단계 전체 통과" : `${failIdx + 1}단계에서 차단`}
+      </p>
+      {rows.map((s, i) => {
+        const state = failIdx < 0 ? "ok" : i < failIdx ? "ok" : i === failIdx ? "fail" : "skip";
+        return (
+          <div key={i} className="step-row flex items-start gap-2 py-0.5" style={{ animationDelay: `${i * 0.12}s` }}>
+            <span className={`mt-0.5 flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold ${
+              state === "ok" ? "bg-[#14f195]/20 text-[#14f195]" :
+              state === "fail" ? "bg-rose-500/25 text-rose-400" : "bg-white/5 text-slate-600"}`}>
+              {state === "ok" ? "✓" : state === "fail" ? "✕" : "·"}
+            </span>
+            <div className="min-w-0">
+              <span className={`text-[12px] ${state === "fail" ? "text-rose-400 font-semibold" : state === "skip" ? "text-slate-600" : "text-slate-300"}`}>
+                {s.label}
+              </span>
+              {state === "ok" && s.detail && (
+                <span className="ml-2 text-[11px] text-slate-500">{s.detail}</span>
+              )}
+              {state === "fail" && failDetail && (
+                <span className="ml-2 text-[11px] text-rose-400/80">{failDetail}</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function Home() {
   const [state, setState] = useState<AppState | null>(null);
@@ -80,7 +140,6 @@ export default function Home() {
   }, [refresh]);
 
   useEffect(() => {
-    // 컨테이너 내부만 스크롤 — scrollIntoView는 페이지 전체를 끌어내려 헤더가 밀림
     const el = logBox.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
@@ -151,23 +210,28 @@ export default function Home() {
       {/* 헤더 */}
       <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#3182f6] text-xl text-white shadow-sm">⛵</div>
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#9945ff] to-[#6d28d9] text-xl shadow-[0_4px_20px_rgba(153,69,255,.4)]">⛵</div>
           <div>
-            <h1 className="text-xl font-bold">장보고 <span className="text-sm font-medium text-slate-500">Agent Commerce Gateway</span></h1>
+            <h1 className="text-xl font-bold">
+              <span className="grad-text">장보고</span>{" "}
+              <span className="text-sm font-medium text-slate-400">Agent Commerce Gateway</span>
+            </h1>
             <p className="text-xs text-slate-500">가맹점을 5분 만에, AI 에이전트가 결제하는 헤드리스 상점으로</p>
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs">
           {booting ? (
-            <span className="rounded-full bg-slate-200 px-3 py-1.5 text-slate-600">체인 부트스트랩 중…</span>
+            <span className="card px-3 py-1.5 text-slate-400">체인 부트스트랩 중…</span>
           ) : (
             <>
-              <span className={`rounded-full px-3 py-1.5 font-semibold ${state?.mode === "devnet" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+              <span className={`rounded-full px-3 py-1.5 font-semibold ${state?.mode === "devnet"
+                ? "bg-[#14f195]/10 text-[#14f195] shadow-[0_0_16px_rgba(20,241,149,.25)]"
+                : "bg-amber-400/10 text-amber-300"}`}>
                 {state?.mode === "devnet" ? "● Solana Devnet" : "● Sandbox (폴백)"}
               </span>
               {state?.agentWallet && (
-                <span className="rounded-full bg-white px-3 py-1.5 text-slate-700 shadow-sm">
-                  🤖 에이전트 지갑 <b>{usdc(state.agentWallet.usdcMicro)} USDC</b>
+                <span className="card px-3 py-1.5 text-slate-300">
+                  🤖 에이전트 지갑 <b className="text-white">{usdc(state.agentWallet.usdcMicro)} USDC</b>
                 </span>
               )}
             </>
@@ -176,7 +240,7 @@ export default function Home() {
       </header>
 
       {/* 탭 */}
-      <nav className="mb-5 flex gap-1 rounded-2xl bg-white p-1 shadow-sm">
+      <nav className="card mb-5 flex gap-1 p-1">
         {([
           ["agent", "🤖 에이전트 콘솔"],
           ["merchants", "🏪 가맹점"],
@@ -185,7 +249,10 @@ export default function Home() {
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-semibold transition ${tab === key ? "bg-[#3182f6] text-white" : "text-slate-500 hover:bg-slate-50"}`}
+            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+              tab === key
+                ? "bg-gradient-to-r from-[#9945ff] to-[#6d28d9] text-white shadow-[0_2px_16px_rgba(153,69,255,.35)]"
+                : "text-slate-400 hover:bg-white/5"}`}
           >
             {label}
           </button>
@@ -195,73 +262,83 @@ export default function Home() {
       {/* ── 에이전트 콘솔 ── */}
       {tab === "agent" && (
         <div className="grid gap-5 lg:grid-cols-[380px_1fr]">
-          <section className="rounded-2xl bg-white p-5 shadow-sm">
-            <h2 className="mb-4 text-base font-bold">자율 조달 실행</h2>
-            <label className="mb-1 block text-xs font-semibold text-slate-500">조달 목표</label>
+          <section className="card h-fit p-5">
+            <h2 className="mb-4 text-base font-bold text-white">자율 조달 실행</h2>
+            <label className="mb-1 block text-xs font-semibold text-slate-400">조달 목표</label>
             <input value={goal} onChange={(e) => setGoal(e.target.value)}
-              className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[#3182f6]" />
+              className="input-dark mb-3 w-full rounded-xl px-3 py-2.5 text-sm" />
             <div className="mb-3 grid grid-cols-3 gap-2">
               <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-500">카테고리</label>
+                <label className="mb-1 block text-xs font-semibold text-slate-400">카테고리</label>
                 <input value={category} onChange={(e) => setCategory(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[#3182f6]" />
+                  className="input-dark w-full rounded-xl px-3 py-2.5 text-sm" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-500">수량</label>
+                <label className="mb-1 block text-xs font-semibold text-slate-400">수량</label>
                 <input type="number" value={qty} onChange={(e) => setQty(Number(e.target.value))}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[#3182f6]" />
+                  className="input-dark w-full rounded-xl px-3 py-2.5 text-sm" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-500">예산(USDC)</label>
+                <label className="mb-1 block text-xs font-semibold text-slate-400">예산(USDC)</label>
                 <input type="number" value={budget} onChange={(e) => setBudget(Number(e.target.value))}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[#3182f6]" />
+                  className="input-dark w-full rounded-xl px-3 py-2.5 text-sm" />
               </div>
             </div>
             <button onClick={() => run("normal")} disabled={running || booting}
-              className="mb-4 w-full rounded-xl bg-[#3182f6] py-3 text-sm font-bold text-white transition hover:bg-blue-600 disabled:opacity-40">
+              className="btn-primary mb-4 w-full rounded-xl py-3 text-sm font-bold text-white disabled:opacity-40">
               {running ? "에이전트 실행 중…" : "▶ 에이전트 실행 (사람 승인 0회)"}
             </button>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="mb-2 text-xs font-bold text-slate-600">🛡️ 네거티브 데모 — 판매자측 정책 엔진이 차단</p>
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <p className="mb-2 text-xs font-bold text-slate-400">🛡️ 네거티브 데모 — 판매자측 정책 엔진이 차단</p>
               <div className="grid gap-1.5">
-                <button onClick={() => run("over_budget")} disabled={running || booting}
-                  className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-left text-xs text-rose-600 hover:bg-rose-50 disabled:opacity-40">
-                  예산 초과 — 위임 예산 50 USDC로 65 USDC 주문 시도
-                </button>
-                <button onClick={() => run("expired")} disabled={running || booting}
-                  className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-left text-xs text-rose-600 hover:bg-rose-50 disabled:opacity-40">
-                  만료 위임장 — 어제 만료된 mandate로 주문 시도
-                </button>
-                <button onClick={() => run("out_of_scope")} disabled={running || booting}
-                  className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-left text-xs text-rose-600 hover:bg-rose-50 disabled:opacity-40">
-                  범위 밖 — &apos;포장재&apos; 한정 위임으로 식자재 구매 시도
-                </button>
+                {([
+                  ["over_budget", "예산 초과 — 위임 예산 50 USDC로 65 USDC 주문 시도"],
+                  ["expired", "만료 위임장 — 어제 만료된 mandate로 주문 시도"],
+                  ["out_of_scope", "범위 밖 — '포장재' 한정 위임으로 식자재 구매 시도"],
+                ] as const).map(([sc, label]) => (
+                  <button key={sc} onClick={() => run(sc)} disabled={running || booting}
+                    className="rounded-lg border border-rose-500/25 bg-rose-500/5 px-3 py-2 text-left text-xs text-rose-300 transition hover:bg-rose-500/15 disabled:opacity-40">
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
           </section>
 
-          <section className="rounded-2xl bg-[#0f1523] p-5 shadow-sm">
+          <section className="card p-5">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-bold text-white">실행 로그 <span className="text-xs font-normal text-slate-400">AP2 mandate → A2A 견적 → x402 결제</span></h2>
-              {running && <span className="animate-pulse text-xs text-emerald-400">● LIVE</span>}
+              <h2 className="text-base font-bold text-white">
+                실행 로그 <span className="text-xs font-normal text-slate-500">AP2 mandate → A2A 견적 → x402 결제</span>
+              </h2>
+              {running && <span className="animate-pulse text-xs text-[#14f195]">● LIVE</span>}
             </div>
-            <div ref={logBox} className="h-[460px] overflow-y-auto rounded-xl bg-black/30 p-4 text-[13px] leading-6">
+            <div ref={logBox} className="h-[460px] overflow-y-auto rounded-xl border border-white/5 bg-black/40 p-4 text-[13px] leading-6">
               {logs.length === 0 && (
-                <p className="text-slate-500">에이전트를 실행하면 mandate 발급부터 온체인 결제·영수증까지 전 과정이 여기 스트리밍됩니다.</p>
+                <p className="text-slate-500">에이전트를 실행하면 mandate 발급부터 온체인 결제·영수증·검증 6단계까지 전 과정이 여기 스트리밍됩니다.</p>
               )}
               {logs.map((l, i) => (
-                <div key={i} className="mb-1 flex gap-2">
-                  <span>{STEP_ICON[l.step] ?? "·"}</span>
-                  <div className={LEVEL_STYLE[l.level].replace("text-slate-600", "text-slate-300").replace("text-emerald-700", "text-emerald-400").replace("text-rose-600", "text-rose-400").replace("text-amber-600", "text-amber-300")}>
-                    {l.message}
-                    {l.data?.explorerUrl && l.data.explorerUrl.startsWith("http") && (
-                      <>
-                        {" "}
-                        <a href={l.data.explorerUrl} target="_blank" rel="noreferrer"
-                          className="underline decoration-dotted text-sky-400">Explorer에서 확인 ↗</a>
-                      </>
-                    )}
+                <div key={i}>
+                  <div className="mb-1 flex gap-2">
+                    <span>{STEP_ICON[l.step] ?? "·"}</span>
+                    <div className={LEVEL_STYLE[l.level]}>
+                      {l.message}
+                      {l.data?.explorerUrl && l.data.explorerUrl.startsWith("http") && (
+                        <>
+                          {" "}
+                          <a href={l.data.explorerUrl} target="_blank" rel="noreferrer"
+                            className="text-[#9945ff] underline decoration-dotted hover:text-[#b06bff]">
+                            Explorer에서 확인 ↗
+                          </a>
+                        </>
+                      )}
+                    </div>
                   </div>
+                  {l.step === "receipt" && l.data?.verification && (
+                    <VerifyCard steps={l.data.verification} />
+                  )}
+                  {l.step === "blocked" && l.data?.error?.code && (
+                    <VerifyCard failIdx={failIdxOf(l.data.error.code)} failDetail={l.data.error.detail ?? l.data.error.message} />
+                  )}
                 </div>
               ))}
             </div>
@@ -272,41 +349,48 @@ export default function Home() {
       {/* ── 가맹점 ── */}
       {tab === "merchants" && (
         <div className="grid gap-5 lg:grid-cols-[380px_1fr]">
-          <section className="h-fit rounded-2xl bg-white p-5 shadow-sm">
-            <h2 className="mb-1 text-base font-bold">가맹점 온보딩</h2>
+          <section className="card h-fit p-5">
+            <h2 className="mb-1 text-base font-bold text-white">가맹점 온보딩</h2>
             <p className="mb-4 text-xs text-slate-500">상품을 등록하면 즉시 에이전트용 카탈로그·견적·x402 결제 엔드포인트가 발급됩니다.</p>
-            <label className="mb-1 block text-xs font-semibold text-slate-500">상호명</label>
+            <label className="mb-1 block text-xs font-semibold text-slate-400">상호명</label>
             <input value={mName} onChange={(e) => setMName(e.target.value)} placeholder="예) 을지로 베이커리"
-              className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[#3182f6]" />
-            <label className="mb-1 block text-xs font-semibold text-slate-500">카테고리</label>
+              className="input-dark mb-3 w-full rounded-xl px-3 py-2.5 text-sm" />
+            <label className="mb-1 block text-xs font-semibold text-slate-400">카테고리</label>
             <input value={mCategory} onChange={(e) => setMCategory(e.target.value)}
-              className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[#3182f6]" />
-            <label className="mb-1 block text-xs font-semibold text-slate-500">상품 목록 <span className="font-normal">(줄당: 이름, 가격KRW, 재고, 단위)</span></label>
+              className="input-dark mb-3 w-full rounded-xl px-3 py-2.5 text-sm" />
+            <label className="mb-1 block text-xs font-semibold text-slate-400">
+              상품 목록 <span className="font-normal">(줄당: 이름, 가격KRW, 재고, 단위)</span>
+            </label>
             <textarea value={mItems} onChange={(e) => setMItems(e.target.value)} rows={4}
-              className="mono mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-xs outline-none focus:border-[#3182f6]" />
+              className="input-dark mono mb-3 w-full rounded-xl px-3 py-2.5 text-xs" />
             <button onClick={onboard} disabled={!mName.trim()}
-              className="w-full rounded-xl bg-[#191f28] py-3 text-sm font-bold text-white transition hover:bg-black disabled:opacity-40">
+              className="w-full rounded-xl bg-gradient-to-r from-[#14f195] to-[#0dc47a] py-3 text-sm font-bold text-[#05231a] transition hover:brightness-110 disabled:opacity-40">
               + 헤드리스 상점 만들기
             </button>
-            {onboardMsg && <p className="mt-3 text-xs">{onboardMsg}</p>}
+            {onboardMsg && <p className="mt-3 text-xs text-slate-300">{onboardMsg}</p>}
           </section>
 
           <section className="grid h-fit gap-4">
             {state?.merchants.map((m) => (
-              <div key={m.id} className="rounded-2xl bg-white p-5 shadow-sm">
+              <div key={m.id} className="card p-5">
                 <div className="mb-3 flex items-center justify-between">
                   <div>
-                    <h3 className="font-bold">{m.name} <span className="ml-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{m.category}</span></h3>
-                    <p className="mono mt-0.5 text-[11px] text-slate-400">지갑 {m.walletPubB58.slice(0, 12)}…</p>
+                    <h3 className="font-bold text-white">
+                      {m.name}{" "}
+                      <span className="ml-1 rounded-md bg-white/5 px-2 py-0.5 text-xs font-medium text-slate-400">{m.category}</span>
+                    </h3>
+                    <p className="mono mt-0.5 text-[11px] text-slate-500">지갑 {m.walletPubB58.slice(0, 12)}…</p>
                   </div>
                   <div className="text-right text-[11px] text-slate-500">
-                    <a className="mono block text-sky-600 hover:underline" href={`/api/m/${m.id}/catalog`} target="_blank">GET /api/m/{m.id.slice(0, 10)}…/catalog ↗</a>
+                    <a className="mono block text-[#9945ff] hover:underline" href={`/api/m/${m.id}/catalog`} target="_blank">
+                      GET /api/m/{m.id.slice(0, 10)}…/catalog ↗
+                    </a>
                     <span className="mono">POST …/quote · POST …/buy (x402)</span>
                   </div>
                 </div>
                 <table className="w-full text-left text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 text-xs text-slate-400">
+                    <tr className="border-b border-white/5 text-xs text-slate-500">
                       <th className="py-1.5 font-medium">상품</th>
                       <th className="py-1.5 font-medium">가격</th>
                       <th className="py-1.5 font-medium">USDC</th>
@@ -315,11 +399,11 @@ export default function Home() {
                   </thead>
                   <tbody>
                     {m.items.map((i) => (
-                      <tr key={i.id} className="border-b border-slate-50">
-                        <td className="py-2">{i.name}</td>
-                        <td className="py-2 text-slate-500">₩{krw(i.priceKrw)}</td>
-                        <td className="mono py-2 text-slate-500">{usdc(i.priceMicro)}</td>
-                        <td className="py-2 text-right text-slate-500">{i.stock}{i.unit}</td>
+                      <tr key={i.id} className="border-b border-white/[.03]">
+                        <td className="py-2 text-slate-200">{i.name}</td>
+                        <td className="py-2 text-slate-400">₩{krw(i.priceKrw)}</td>
+                        <td className="mono py-2 text-slate-400">{usdc(i.priceMicro)}</td>
+                        <td className="py-2 text-right text-slate-400">{i.stock}{i.unit}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -334,45 +418,54 @@ export default function Home() {
       {tab === "ledger" && (
         <div className="grid gap-5">
           <div className="grid grid-cols-3 gap-4">
-            {[
-              ["총 거래액", `${usdc(totalGross)} USDC`],
-              ["플랫폼 수수료 (0.5%)", `${usdc(totalGross - totalNet)} USDC`],
-              ["가맹점 정산액", `${usdc(totalNet)} USDC ≈ ₩${krw(totalNetKrw)}`],
-            ].map(([t, v]) => (
-              <div key={t} className="rounded-2xl bg-white p-5 shadow-sm">
-                <p className="text-xs font-semibold text-slate-500">{t}</p>
-                <p className="mt-1 text-lg font-bold">{v}</p>
+            {([
+              ["총 거래액", `${usdc(totalGross)} USDC`, false],
+              ["플랫폼 수수료 (0.5%)", `${usdc(totalGross - totalNet)} USDC`, false],
+              ["가맹점 정산액", `${usdc(totalNet)} USDC ≈ ₩${krw(totalNetKrw)}`, true],
+            ] as [string, string, boolean][]).map(([t, v, hl]) => (
+              <div key={t} className="card p-5">
+                <p className="text-xs font-semibold text-slate-400">{t}</p>
+                <p className={`mt-1 text-lg font-bold ${hl ? "text-[#14f195]" : "text-white"}`}>{v}</p>
               </div>
             ))}
           </div>
-          <section className="rounded-2xl bg-white p-5 shadow-sm">
-            <h2 className="mb-3 text-base font-bold">주문 내역 <span className="text-xs font-normal text-slate-400">모든 주문은 온체인 트랜잭션과 1:1</span></h2>
-            {(!state || state.orders.length === 0) && <p className="text-sm text-slate-400">아직 주문이 없습니다 — 에이전트를 실행해 보세요.</p>}
+          <section className="card p-5">
+            <h2 className="mb-3 text-base font-bold text-white">
+              주문 내역 <span className="text-xs font-normal text-slate-500">모든 주문은 온체인 트랜잭션과 1:1</span>
+            </h2>
+            {(!state || state.orders.length === 0) && (
+              <p className="text-sm text-slate-500">아직 주문이 없습니다 — 에이전트를 실행해 보세요.</p>
+            )}
             {state?.orders.map((o) => (
-              <div key={o.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-50 py-3 text-sm">
+              <div key={o.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 py-3 text-sm">
                 <div>
-                  <p className="font-semibold">{o.merchantName} — {o.items.map((i) => `${i.name} ×${i.qty}`).join(", ")}</p>
-                  <p className="text-xs text-slate-400">{new Date(o.createdAt).toLocaleString("ko-KR")} · <span className="mono">{o.id}</span></p>
+                  <p className="font-semibold text-slate-200">
+                    {o.merchantName} — {o.items.map((i) => `${i.name} ×${i.qty}`).join(", ")}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {new Date(o.createdAt).toLocaleString("ko-KR")} · <span className="mono">{o.id}</span>
+                  </p>
                 </div>
                 <div className="text-right">
-                  <p className="font-bold">{usdc(o.totalMicro)} USDC</p>
+                  <p className="font-bold text-white">{usdc(o.totalMicro)} USDC</p>
                   {o.explorerUrl.startsWith("http") ? (
-                    <a href={o.explorerUrl} target="_blank" rel="noreferrer" className="mono text-xs text-sky-600 hover:underline">
+                    <a href={o.explorerUrl} target="_blank" rel="noreferrer"
+                      className="mono text-xs text-[#9945ff] hover:underline">
                       tx {o.txSig.slice(0, 16)}… ↗
                     </a>
                   ) : (
-                    <span className="mono text-xs text-amber-600">sandbox tx {o.txSig.slice(0, 16)}…</span>
+                    <span className="mono text-xs text-amber-400/80">sandbox tx {o.txSig.slice(0, 16)}…</span>
                   )}
                 </div>
               </div>
             ))}
           </section>
-          <section className="rounded-2xl bg-white p-5 shadow-sm">
-            <h2 className="mb-1 text-base font-bold">정산 원장</h2>
-            <p className="mb-3 text-xs text-slate-400">원화 환산은 데모 고정 환율(1 USDC = 1,450 KRW) 기준 오프램프 시뮬레이션입니다.</p>
+          <section className="card p-5">
+            <h2 className="mb-1 text-base font-bold text-white">정산 원장</h2>
+            <p className="mb-3 text-xs text-slate-500">원화 환산은 데모 고정 환율(1 USDC = 1,450 KRW) 기준 오프램프 시뮬레이션입니다.</p>
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-xs text-slate-400">
+                <tr className="border-b border-white/5 text-xs text-slate-500">
                   <th className="py-1.5 font-medium">가맹점</th>
                   <th className="py-1.5 font-medium">거래액</th>
                   <th className="py-1.5 font-medium">수수료</th>
@@ -382,12 +475,12 @@ export default function Home() {
               </thead>
               <tbody>
                 {state?.ledger.map((l) => (
-                  <tr key={l.orderId} className="border-b border-slate-50">
-                    <td className="py-2">{l.merchantName}</td>
-                    <td className="mono py-2">{usdc(l.grossMicro)}</td>
+                  <tr key={l.orderId} className="border-b border-white/[.03]">
+                    <td className="py-2 text-slate-200">{l.merchantName}</td>
+                    <td className="mono py-2 text-slate-300">{usdc(l.grossMicro)}</td>
                     <td className="mono py-2 text-slate-500">-{usdc(l.feeMicro)}</td>
-                    <td className="mono py-2 font-semibold">{usdc(l.netMicro)}</td>
-                    <td className="py-2 text-right font-semibold">₩{krw(l.netKrw)}</td>
+                    <td className="mono py-2 font-semibold text-slate-200">{usdc(l.netMicro)}</td>
+                    <td className="py-2 text-right font-semibold text-[#14f195]">₩{krw(l.netKrw)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -396,7 +489,7 @@ export default function Home() {
         </div>
       )}
 
-      <footer className="mt-8 text-center text-[11px] text-slate-400">
+      <footer className="mt-8 text-center text-[11px] text-slate-600">
         장보고 — AP2 mandate(판매자측 검증) · A2A 견적 · x402 · Solana Devnet mock USDC · 데모 빌드
       </footer>
     </div>
