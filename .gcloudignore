@@ -1,0 +1,9 @@
+# Cloud Build 소스 업로드 제외 목록
+# 주의: data/ 는 의도적으로 포함 — devnet 데모 키·mint 상태를 라이브 배포에서 재사용
+# (실자산 없는 테스트넷 전용 키)
+node_modules/
+.next/
+.git/
+.env*
+submission/
+*.tsbuildinfo
