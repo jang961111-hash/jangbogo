@@ -265,3 +265,84 @@ describe("지불됨·미확정 — 지불 확인 뒤 확정할 수 없으면 조
     expect(loadDB().unconfirmedPayments).toHaveLength(0);
   });
 });
+
+describe("보안 리뷰 회귀 — 위조·불일치 요청은 상태를 바꾸지 않는다", () => {
+  const forge = (body: string) => {
+    const b = JSON.parse(body);
+    b.mandates.cart.sigB58 = b.mandates.intent.sigB58; // 형식은 맞지만 cart 서명이 아닌 값
+    return JSON.stringify(b);
+  };
+
+  it("서명 위조 cart + 유효 지불로 선요청 → 거절·상태 불변 → 정당한 요청은 성공", async () => {
+    const s = scenario(1000);
+    const body = s.body();
+    const p = await requestAndPay(s, body);
+    const r = await buy(s.m.id, forge(body), p.xpay!);
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe("MANDATE_CART_SIG_INVALID");
+    const db = loadDB();
+    expect(db.usedSigs).not.toContain(p.sig);
+    expect(db.unconfirmedPayments).toHaveLength(0);
+    expect(db.pendingOrders.some((x) => x.nonce === JSON.parse(Buffer.from(p.xpay!, "base64").toString()).nonce)).toBe(true);
+    expect((await buy(s.m.id, body, p.xpay!)).status).toBe(200);
+  });
+
+  it("402와 품목이 다른 cart(총액·서명은 유효)는 PAYMENT_CART_CHANGED로 거절된다", async () => {
+    const s = scenario(1000);
+    const other = s.m.items.find((i) => i.id !== s.item.id)!;
+    mutateDB((d) => {
+      d.merchants.find((x) => x.id === s.m.id)!.items.find((i) => i.id === other.id)!.priceMicro = s.item.priceMicro;
+    });
+    const body = s.body();
+    const p = await requestAndPay(s, body);
+    const swapped = makeCartMandate({
+      agentSecretB58: s.db.buyer!.secretB58, intent: s.intent, merchantId: s.m.id,
+      items: [{ itemId: other.id, qty: QTY, unitMicro: s.item.priceMicro }],
+    });
+    const r = await buy(s.m.id, JSON.stringify({ cart: { items: swapped.items }, mandates: { intent: s.intent, cart: swapped } }), p.xpay!);
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe("PAYMENT_CART_CHANGED");
+    expect(loadDB().orders.filter((o) => o.txSig === p.sig)).toHaveLength(0);
+    expect((await buy(s.m.id, body, p.xpay!)).status).toBe(200);
+  });
+
+  it("확정 뒤 멱등 반환도 mandate 서명 검증을 통과해야 한다", async () => {
+    const s = scenario(1000);
+    const body = s.body();
+    const p = await requestAndPay(s, body);
+    expect((await buy(s.m.id, body, p.xpay!)).status).toBe(200);
+    const r = await buy(s.m.id, forge(body), p.xpay!);
+    expect(r.status).toBe(403);
+    expect(r.json.order).toBeUndefined();
+  });
+
+  it("검증 대기 중 402가 만료되면 커밋 단계에서 잡아 미확정으로 기록한다", async () => {
+    process.env.SBX_VERIFY_DELAY_MS = "80";
+    const s = scenario(1000);
+    const body = s.body();
+    const p = await requestAndPay(s, body);
+    mutateDB((d) => {
+      for (const x of d.pendingOrders) x.expiresAt = Date.now() + 20;
+    });
+    const r = await buy(s.m.id, body, p.xpay!);
+    expect(r.status).toBe(409);
+    expect(r.json.unconfirmedPayment.reason).toBe("PAYMENT_EXPIRED");
+  });
+
+  it("검증 실패(과소지불) 뒤 정당한 지불로 재시도하면 성공한다", async () => {
+    const s = scenario(1000);
+    const body = s.body();
+    const req = ((await buy(s.m.id, body)).json as X402Body).accepts[0];
+    const pay = async (amt: number) => {
+      const { sig } = await transferUsdc({ fromSecretB58: s.db.buyer!.secretB58, payToB58: req.payTo, amountMicro: amt, memo: req.memo });
+      return encodePaymentHeader({ signature: sig, payer: s.db.buyer!.pubB58, nonce: req.nonce });
+    };
+    expect((await buy(s.m.id, body, await pay(req.amountMicro - 1))).status).toBe(403);
+    expect((await buy(s.m.id, body, await pay(req.amountMicro))).status).toBe(200);
+  });
+
+  it("깨진 DB 파일은 빈 DB로 대체하지 않고 실패한다 (fail-closed — 리플레이 목록 소실 방지)", () => {
+    fs.writeFileSync(path.join(TMP, "db.json"), '{"usedSigs": ["a"');
+    expect(() => loadDB()).toThrow();
+  });
+});

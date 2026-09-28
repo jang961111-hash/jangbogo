@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadDB, mutateDB, newId, type DB, type Merchant, type Order, type UnconfirmedPayment } from "@/lib/store";
 import { validatePolicy, POLICY_MESSAGES, type PolicyFail } from "@/lib/policy";
-import { intentHash, signPayload, type IntentMandate, type CartMandate } from "@/lib/mandate";
+import { intentHash, signPayload, verifyMandatePair, type IntentMandate, type CartMandate } from "@/lib/mandate";
 import { buildRequirements, parsePaymentHeader, type PaymentHeader } from "@/lib/x402";
 import { ensurePayTo, verifyPayment, explorerUrl } from "@/lib/chain";
 import { feeMicro, microToKrw } from "@/lib/fx";
@@ -16,6 +16,10 @@ const PENDING_RETAIN_MS = 3_600_000;
 // Node는 단일 스레드라 "검사 → 등록" 사이에 await가 없으면 한 프로세스 안에서 원자적이다.
 // 다중 인스턴스에서는 공유 DB의 유니크 제약·트랜잭션이 필요하다 (README 정직 고지 참조).
 const inflight = new Set<string>();
+
+// 402 발급 뒤 시간·다른 주문 때문에 바뀔 수 있는 정책 실패. 이 경우만 "지불됨·미확정" 기록 대상이다.
+// (MANDATE_EXPIRED는 서명 검증을 통과한 뒤에야 나오는 코드라 위조로 만들 수 없다)
+const STATE_DEPENDENT = new Set<string>(["CART_STOCK_INSUFFICIENT", "MANDATE_BUDGET_EXCEEDED", "MANDATE_EXPIRED"]);
 
 function reject(code: string, message: string, detail?: string, status = 403) {
   return NextResponse.json({ error: { code, message, detail } }, { status });
@@ -71,8 +75,11 @@ export async function POST(
   const payment = parsePaymentHeader(req.headers.get("X-PAYMENT"));
 
   if (payment) {
+    // mandate 서명은 상태와 무관하므로 무엇보다 먼저 확인한다. 위조 요청은 어떤 상태도 바꾸거나 읽어 가지 못한다.
+    const sig = verifyMandatePair(intent, cartMandate);
+    if (!sig.ok) return reject(sig.code, POLICY_MESSAGES[sig.code]);
     // 멱등 재시도: 이미 확정된 결제 증빙이면 새 주문 없이 기존 주문을 돌려준다.
-    // 정책 재검사보다 먼저 한다 — 확정 뒤에는 재고·예산이 이미 이 주문만큼 줄어 있다.
+    // 상태 의존 정책 재검사보다 먼저 한다 — 확정 뒤에는 재고·예산이 이미 이 주문만큼 줄어 있다.
     const cur = loadDB();
     if (cur.usedSigs.includes(payment.signature)) {
       const prev = cur.orders.find(
@@ -171,15 +178,23 @@ async function confirmPayment(params: {
   const pending = db.pendingOrders.find(
     (p) => p.nonce === payment.nonce && p.merchantId === merchant.id
   );
-  // 결제 요청과 연결할 수 없는 증빙은 지불 여부와 무관하게 기존대로 거절
-  if (!pending || pending.intentHash !== iHash || pending.totalMicro !== cartMandate.totalMicro) {
+  // 결제 요청과 연결할 수 없는 증빙은 지불 여부와 무관하게 기존대로 거절 (402 때와 품목·수량까지 같아야 한다)
+  const sameItems =
+    !!pending &&
+    pending.items.length === cartMandate.items.length &&
+    pending.items.every((l, i) => l.itemId === cartMandate.items[i].itemId && l.qty === cartMandate.items[i].qty);
+  if (!pending || pending.intentHash !== iHash || pending.totalMicro !== cartMandate.totalMicro || !sameItems) {
     if (!policy.ok)
       return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
     if (!pending) return reject("PAYMENT_NONCE_UNKNOWN", "유효한 결제 요청(nonce)이 없습니다");
     return reject("PAYMENT_CART_CHANGED", "결제 요청 이후 카트가 변경되었습니다");
   }
 
-  // 402 이후 확정할 수 없게 된 사유(만료·재고 소진 등). 지불이 검증되면 거절 대신 미확정으로 기록한다
+  // 402 이후 "상태가 바뀌어" 확정할 수 없게 된 사유만 blocker로 둔다(만료·재고 소진·예산).
+  // 지불이 검증되면 거절 대신 미확정으로 기록한다. 서명·범위·단가 같은 정적 실패는 요청 자체가
+  // 잘못된 것이므로 검증 전에 상태 변경 없이 거절한다 — 그래야 위조 요청이 남의 지불을 선점하지 못한다.
+  if (!policy.ok && !STATE_DEPENDENT.has(policy.code!))
+    return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
   const blocker: { code: string; message: string; detail?: string } | null =
     Date.now() > pending.expiresAt
       ? { code: "PAYMENT_EXPIRED", message: "결제 요청이 만료되었습니다" }
@@ -207,6 +222,8 @@ async function confirmPayment(params: {
       blocker?.code ??
       (!d.pendingOrders.some((p) => p.nonce === pending.nonce)
         ? "PAYMENT_NONCE_UNKNOWN"
+        : Date.now() > pending.expiresAt // 검증을 기다리는 동안 만료됐을 수 있다
+          ? "PAYMENT_EXPIRED"
         : cartMandate.items.some((l) => (m.items.find((i) => i.id === l.itemId)?.stock ?? 0) < l.qty)
           ? "CART_STOCK_INSUFFICIENT"
           : (d.mandateSpend[iHash] ?? 0) + cartMandate.totalMicro > intent.budgetMicro
