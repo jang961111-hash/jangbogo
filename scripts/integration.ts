@@ -1,6 +1,7 @@
 /* 통합 테스트 — 서버(기본 http://localhost:3402)가 떠 있어야 한다.
    I1 카탈로그/견적 · I2 자율구매 풀사이클 · I3~I5 네거티브 3종 ·
-   I6 과소지불 공격 · I7 리플레이 공격 */
+   I6 과소지불 공격 · I7 리플레이 공격 · I8 동시 리플레이 · I9 예산 초과 402 미발급
+   동시성 경합을 재현하려면 서버를 SBX_VERIFY_DELAY_MS=50 (sandbox 전용 훅)으로 띄운다. */
 import { loadDB } from "../src/lib/store";
 import { makeIntentMandate, makeCartMandate } from "../src/lib/mandate";
 import { transferUsdc } from "../src/lib/chain";
@@ -150,6 +151,34 @@ async function main() {
     check("리플레이 403 거절", rReplay.status === 403);
     check("코드 PAYMENT_REPLAYED", replayBody?.error?.code === "PAYMENT_REPLAYED", JSON.stringify(replayBody).slice(0, 200));
   }
+
+  // I8: 동시 리플레이 — 같은 X-PAYMENT를 5개 동시에 보내도 주문은 1건
+  console.log("\n[I8] 동시 리플레이 (같은 결제 증빙 5개 동시)");
+  const r402c = await fetch(buyUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: buyBody });
+  const reqC = ((await r402c.json()) as X402Body).accepts[0];
+  const { sig: sigC } = await transferUsdc({ fromSecretB58: db.buyer!.secretB58, payToB58: reqC.payTo, amountMicro: reqC.amountMicro, memo: reqC.memo });
+  const xpC = encodePaymentHeader({ signature: sigC, payer: db.buyer!.pubB58, nonce: reqC.nonce });
+  const rsC = await Promise.all(Array.from({ length: 5 }, () =>
+    fetch(buyUrl, { method: "POST", headers: { "Content-Type": "application/json", "X-PAYMENT": xpC }, body: buyBody })));
+  const afterC = await (await fetch(`${BASE}/api/state`)).json();
+  check("같은 서명의 주문 1건", afterC.orders.filter((o: { txSig: string }) => o.txSig === sigC).length === 1,
+    rsC.map((r) => r.status).join(","));
+  check("나머지는 409 또는 기존 주문 반환", rsC.every((r) => r.status === 200 || r.status === 409));
+
+  // I9: 예산 초과 402 미발급 — 예산 안의 402가 이미 발급돼 있으면 다음 402는 지불 전에 403
+  console.log("\n[I9] 예산 예약 (미결제 402가 예산을 잡고 있을 때)");
+  const big = target.items.find((i) => i.stock >= 5)!;
+  const intentB = makeIntentMandate({
+    principal: db.principal!, agentPubB58: db.buyer!.pubB58, scopeCategories: [big.category],
+    budgetMicro: Math.floor(big.priceMicro * 1.5), expiresAt: Date.now() + 86400_000,
+  });
+  const cartB = () => makeCartMandate({ agentSecretB58: db.buyer!.secretB58, intent: intentB, merchantId: target.id, items: [{ itemId: big.id, qty: 1, unitMicro: big.priceMicro }] });
+  const postB = () => { const c = cartB(); return fetch(buyUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cart: { items: c.items }, mandates: { intent: intentB, cart: c } }) }); };
+  check("첫 402 발급", (await postB()).status === 402);
+  const second402 = await postB();
+  const second402Body = await second402.json();
+  check("두 번째는 지불 전 403 MANDATE_BUDGET_EXCEEDED", second402.status === 403 && second402Body?.error?.code === "MANDATE_BUDGET_EXCEEDED",
+    JSON.stringify(second402Body).slice(0, 200));
 
   console.log(`\n=== 결과: ${pass} 통과 / ${fail} 실패 (모드: ${setup.mode}) ===`);
   process.exit(fail > 0 ? 1 : 0);

@@ -17,5 +17,6 @@ export async function GET() {
     orders: [...db.orders].sort((a, b) => b.createdAt - a.createdAt),
     ledger: [...db.ledger].sort((a, b) => b.settledAt - a.settledAt),
     mandateSpend: db.mandateSpend,
+    unconfirmedPayments: db.unconfirmedPayments,
   });
 }
