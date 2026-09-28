@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadDB, mutateDB, newId, type Merchant, type Order } from "@/lib/store";
+import { loadDB, mutateDB, newId, type DB, type Merchant, type Order } from "@/lib/store";
 import { validatePolicy, POLICY_MESSAGES, type PolicyFail } from "@/lib/policy";
 import { intentHash, signPayload, type IntentMandate, type CartMandate } from "@/lib/mandate";
 import { buildRequirements, parsePaymentHeader, type PaymentHeader } from "@/lib/x402";
@@ -17,6 +17,15 @@ const inflight = new Set<string>();
 
 function reject(code: string, message: string, detail?: string, status = 403) {
   return NextResponse.json({ error: { code, message, detail } }, { status });
+}
+
+// 예산 예약 — 발급했지만 아직 확정되지 않은(만료 전) 402 금액의 합. 402 발급 시점에 예산에서
+// 미리 잡아 두고(reserve), 확정되면 mandateSpend로 옮기고(commit), 만료되면 풀린다(release).
+function reservedMicro(d: DB, iHash: string, excludeNonce?: string) {
+  const now = Date.now();
+  return d.pendingOrders
+    .filter((p) => p.intentHash === iHash && p.nonce !== excludeNonce && now < p.expiresAt)
+    .reduce((sum, p) => sum + p.totalMicro, 0);
 }
 
 function receiptOf(order: Order, merchant: Merchant) {
@@ -73,16 +82,27 @@ export async function POST(
   }
 
   // ── 결정론 정책 검증 (결제 이전 프리체크 — 실패 시 자금 이동 자체가 없음)
-  const spentMicro = db.mandateSpend[iHash] ?? 0;
-  const policy = validatePolicy({ intent, cart: cartMandate, merchant, spentMicro });
-  if (!policy.ok)
-    return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
+  // 예산은 확정액 + 미결제 402 예약액 기준. 예산을 넘는 402는 발급하지 않는다
+  // (발급하면 에이전트가 지불한 뒤에야 예산 초과로 거절되어 돈만 이동한다 — T12).
+  const precheck = validatePolicy({
+    intent,
+    cart: cartMandate,
+    merchant,
+    spentMicro: (db.mandateSpend[iHash] ?? 0) + reservedMicro(db, iHash),
+  });
+  if (!precheck.ok)
+    return reject(precheck.code!, POLICY_MESSAGES[precheck.code as PolicyFail], precheck.detail);
 
   // ── 1차 호출: 402 + PaymentRequirements
   const payToB58 = await ensurePayTo(merchant.walletPubB58);
   const nonce = newId("ord");
-  mutateDB((d) => {
+  // ensurePayTo를 기다리는 동안 다른 402가 예약했을 수 있다 → 기록 직전에 최신 상태로 다시 검사
+  const policy = mutateDB((d) => {
     d.pendingOrders = d.pendingOrders.filter((p) => Date.now() < p.expiresAt);
+    const spentMicro = (d.mandateSpend[iHash] ?? 0) + reservedMicro(d, iHash);
+    const m = d.merchants.find((x) => x.id === merchant.id) ?? merchant;
+    const r = validatePolicy({ intent, cart: cartMandate, merchant: m, spentMicro });
+    if (!r.ok) return r;
     d.pendingOrders.push({
       nonce,
       payToB58,
@@ -94,7 +114,10 @@ export async function POST(
       createdAt: Date.now(),
       expiresAt: Date.now() + PENDING_TTL_MS,
     });
+    return r;
   });
+  if (!policy.ok)
+    return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
   const requirements = buildRequirements({
     network: db.mode === "sandbox" ? "sandbox" : "solana-devnet",
     mintB58: db.mintB58!,
@@ -115,7 +138,8 @@ async function confirmPayment(params: {
 }) {
   const { merchant, intent, cartMandate, iHash, payment } = params;
   const db = loadDB(); // 잠금을 잡은 뒤의 최신 상태로 판단한다
-  const spentMicro = db.mandateSpend[iHash] ?? 0;
+  // 자기 402 예약분은 빼고 다른 미결제 예약만 더한다 — 자기 몫은 발급 때 이미 예산 안에 잡혀 있다
+  const spentMicro = (db.mandateSpend[iHash] ?? 0) + reservedMicro(db, iHash, payment.nonce);
   const policy = validatePolicy({
     intent,
     cart: cartMandate,
@@ -198,7 +222,7 @@ async function confirmPayment(params: {
     { label: "카트 정합성 (단가·재고)", detail: "판매가 일치 · 재고 충족" },
     {
       label: "예산 한도 집행",
-      detail: `누적 ${usd(spentMicro)} + 이번 ${usd(cartMandate.totalMicro)} ≤ 예산 ${usd(intent.budgetMicro)} USDC`,
+      detail: `누적·예약 ${usd(spentMicro)} + 이번 ${usd(cartMandate.totalMicro)} ≤ 예산 ${usd(intent.budgetMicro)} USDC`,
     },
     {
       label: "온체인 지불 검증",
