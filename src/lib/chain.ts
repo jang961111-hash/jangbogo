@@ -68,6 +68,9 @@ async function doSetup(): Promise<SetupInfo> {
   if (!db.buyer) db.buyer = newKeyRec();
   saveDB(db);
 
+  // CHAIN_MODE=sandbox: devnet을 시도하지 않는다 (CI·테스트에서 외부 네트워크 호출 0)
+  if (process.env.CHAIN_MODE === "sandbox") return sandboxSetup(db);
+
   // sandbox로 폴백된 상태라도 payer에 SOL이 채워지면(수동 faucet 등) devnet으로 자동 복귀
   if (db.mode === "sandbox") {
     try {
@@ -241,6 +244,10 @@ export async function verifyPayment(params: {
 }): Promise<VerifyResult> {
   const db = loadDB();
   if (db.mode === "sandbox") {
+    // 테스트 훅: devnet 조회 지연(getTransaction p50 ≈ 0.66s)을 모사해 동시성 경합을 결정적으로 재현.
+    // sandbox(모의 체인) 모드이고 환경변수를 명시했을 때만 동작한다. devnet 경로에는 영향 없음.
+    const delay = Math.min(Number(process.env.SBX_VERIFY_DELAY_MS) || 0, 5000);
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     const tx = db.sandbox.txs.find((t) => t.sig === params.sig);
     if (!tx) return { ok: false, reason: "트랜잭션 없음" };
     if (tx.toOwner !== params.payToB58) return { ok: false, reason: "수취인 불일치" };

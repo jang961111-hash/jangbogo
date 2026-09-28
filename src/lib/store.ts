@@ -87,8 +87,10 @@ export interface DB {
   sandbox: { balances: Record<string, number>; txs: SandboxTx[] };
 }
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const DB_PATH = path.join(DATA_DIR, "db.json");
+// 테스트는 JANGBOGO_DATA_DIR로 임시 디렉터리를 가리켜 실제 data/db.json을 건드리지 않는다
+function dataDir(): string {
+  return process.env.JANGBOGO_DATA_DIR || path.join(process.cwd(), "data");
+}
 
 const EMPTY: DB = {
   mode: null,
@@ -103,7 +105,7 @@ const EMPTY: DB = {
 
 export function loadDB(): DB {
   try {
-    const raw = fs.readFileSync(DB_PATH, "utf-8");
+    const raw = fs.readFileSync(path.join(dataDir(), "db.json"), "utf-8");
     return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
   } catch {
     return structuredClone(EMPTY);
@@ -111,8 +113,8 @@ export function loadDB(): DB {
 }
 
 export function saveDB(db: DB): void {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+  fs.mkdirSync(dataDir(), { recursive: true });
+  fs.writeFileSync(path.join(dataDir(), "db.json"), JSON.stringify(db, null, 2));
 }
 
 export function mutateDB<T>(fn: (db: DB) => T): T {
