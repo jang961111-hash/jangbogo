@@ -22,7 +22,7 @@
         └──────────────────────────────────────────┘
 ```
 
-LLM: Gemini(`GEMINI_API_KEY` 존재 시) — 상품 매칭·선택 사유 생성만 담당.
+LLM: Gemini(`VERTEX_PROJECT` 또는 `GEMINI_API_KEY` 존재 시) — 선택 사유 2문장 생성만 담당. 견적 매칭은 키워드 규칙(`quote.ts`), 선택은 최저 단가 규칙(`agent.ts`)이다. (2026-09-28 정정)
 결제 승인·한도 검증은 **항상 결정론적 코드**(프롬프트 인젝션 면역 경계).
 
 ## 2. 모듈 설계
@@ -39,10 +39,10 @@ src/lib/
 │                 verifyMandatePair() → {ok, reason}
 ├── x402.ts       PaymentRequirements 생성(스킴 exact/solana-devnet/mint/payTo/amount/nonce)
 │                 X-PAYMENT 헤더 파싱, 온체인 검증 위임
-├── policy.ts     판매자측 결정론 정책: 서명→만료→카테고리→누적예산→지불금액 5단 검증
+├── policy.ts     판매자측 결정론 정책: 서명→만료→카테고리→카트 정합성→누적예산 (6단계 온체인 지불 검증은 buy/route.ts)
 ├── store.ts      JSON 파일 저장(data/db.json): merchants, orders, ledger, mandateSpend
 ├── agent.ts      구매 에이전트 상태기계: DISCOVER→QUOTE→DECIDE→PAY→RETRY(x402)→RECEIPT
-├── llm.ts        Gemini 래퍼 + 결정론 폴백(최저 단가 + 템플릿 사유)
+├── llm.ts        Gemini 래퍼(선택 사유 2문장) + 템플릿 폴백. 선택 자체는 agent.ts의 최저 단가 규칙
 └── fx.ts         KRW↔USDC 고정 데모 환율(1 USDC = 1,450 KRW, 화면에 '데모 환율' 라벨)
 ```
 
@@ -60,7 +60,7 @@ Agent                    Merchant GW                 Solana Devnet
   │ POST /buy + X-PAYMENT{sig} │                          │
   │───────────────────────────►│ getTransaction(sig) 검증  │
   │                            │─────────────────────────►│
-  │                            │ policy 5단 검증 통과       │
+  │                            │ 6단계 검증 통과            │
   │   200 {order, receipt}     │ 재고 차감·정산 원장 기록    │
   │◄───────────────────────────│                          │
 ```
@@ -85,8 +85,8 @@ MandateSpend { intentHash → cumulativeUsdc }   // 판매자측 예산 집행 �
 ## 5. 체인 전략 (운영진 공식 권장 준수)
 
 1. 기본: **devnet + 자체 발행 mock USDC**(decimals 6) — faucet 한도 회피, 운영진 권장.
-2. airdrop 실패(faucet 한도) 시: sandbox 모드 자동 폴백 — 동일 코드 경로, UI에 "SANDBOX" 배지 명시.
-3. 키 관리: `data/keys/*.json` (gitignore). demo 전용, 실자산 없음.
+2. airdrop 실패(faucet 한도) 시: sandbox 모드 자동 폴백 — `chain.ts` 인터페이스는 같지만 전송·검증은 파일 DB 안의 모의 원장으로 처리하는 별도 분기, UI에 "SANDBOX" 배지 명시.
+3. 키 관리: `data/db.json` 한 파일에 평문 저장 (gitignore). demo 전용, 실자산 없음.
 
 ## 6. 기술 스택
 
