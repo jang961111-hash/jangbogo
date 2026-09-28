@@ -137,7 +137,7 @@ describe("T8-A 같은 결제 증빙의 동시 전송 (리플레이 경합)", () 
 describe("T8-B · T12 위임 예산 (예산 100 USDC, 주문 65.52 USDC)", () => {
   async function run(K: number, concurrent: boolean) {
     const s = scenario(100);
-    const pays: { body: string; xpay: string | null; paidMicro: number }[] = [];
+    const pays: ({ body: string } & Awaited<ReturnType<typeof requestAndPay>>)[] = [];
     for (let i = 0; i < K; i++) {
       const body = s.body();
       pays.push({ body, ...(await requestAndPay(s, body)) });

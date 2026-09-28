@@ -29,6 +29,7 @@ export interface Order {
   items: { itemId: string; name: string; qty: number; unitMicro: number }[];
   totalMicro: number;
   txSig: string;
+  nonce?: string; // x402 결제 요청 nonce — 멱등 재시도 판별용 (이 필드 이전 주문엔 없음)
   explorerUrl: string;
   agentPubB58: string;
   intentHash: string;

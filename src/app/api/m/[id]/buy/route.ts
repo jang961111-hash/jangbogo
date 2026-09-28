@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadDB, mutateDB, newId } from "@/lib/store";
+import { loadDB, mutateDB, newId, type Merchant, type Order } from "@/lib/store";
 import { validatePolicy, POLICY_MESSAGES, type PolicyFail } from "@/lib/policy";
 import { intentHash, signPayload, type IntentMandate, type CartMandate } from "@/lib/mandate";
-import { buildRequirements, parsePaymentHeader } from "@/lib/x402";
+import { buildRequirements, parsePaymentHeader, type PaymentHeader } from "@/lib/x402";
 import { ensurePayTo, verifyPayment, explorerUrl } from "@/lib/chain";
 import { feeMicro, microToKrw } from "@/lib/fx";
 
@@ -10,8 +10,18 @@ export const dynamic = "force-dynamic";
 
 const PENDING_TTL_MS = 300_000;
 
+// 결제 증빙 in-flight 잠금 — 같은 서명(또는 nonce)의 검증이 진행 중이면 뒤 요청은 409.
+// Node는 단일 스레드라 "검사 → 등록" 사이에 await가 없으면 한 프로세스 안에서 원자적이다.
+// 다중 인스턴스에서는 공유 DB의 유니크 제약·트랜잭션이 필요하다 (README 정직 고지 참조).
+const inflight = new Set<string>();
+
 function reject(code: string, message: string, detail?: string, status = 403) {
   return NextResponse.json({ error: { code, message, detail } }, { status });
+}
+
+function receiptOf(order: Order, merchant: Merchant) {
+  const body = { orderId: order.id, totalMicro: order.totalMicro, txSig: order.txSig };
+  return { ...body, merchantPubB58: merchant.walletPubB58, sigB58: signPayload(body, merchant.walletSecretB58) };
 }
 
 // x402 구매 플로우 — 1차: 402 Payment Required / 2차(X-PAYMENT): 온체인 검증 후 주문 확정
@@ -32,44 +42,89 @@ export async function POST(
   if (cartMandate.merchantId !== merchant.id)
     return reject("MANDATE_MERCHANT_MISMATCH", "다른 가맹점용 카트입니다");
 
-  // ── 결정론 정책 검증 (결제 이전 프리체크 — 실패 시 자금 이동 자체가 없음)
   const iHash = intentHash(intent);
+  const payment = parsePaymentHeader(req.headers.get("X-PAYMENT"));
+
+  if (payment) {
+    // 멱등 재시도: 이미 확정된 결제 증빙이면 새 주문 없이 기존 주문을 돌려준다.
+    // 정책 재검사보다 먼저 한다 — 확정 뒤에는 재고·예산이 이미 이 주문만큼 줄어 있다.
+    const cur = loadDB();
+    if (cur.usedSigs.includes(payment.signature)) {
+      const prev = cur.orders.find(
+        (o) => o.txSig === payment.signature && o.merchantId === merchant.id && o.nonce === payment.nonce
+      );
+      if (!prev) return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
+      return NextResponse.json({ order: prev, receipt: receiptOf(prev, merchant), idempotentReplay: true });
+    }
+    const keys = [`sig:${payment.signature}`, `nonce:${payment.nonce}`];
+    if (keys.some((k) => inflight.has(k)))
+      return reject(
+        "PAYMENT_IN_PROGRESS",
+        "같은 결제 증빙을 이미 검증 중입니다",
+        "잠시 후 같은 요청을 다시 보내면 확정된 주문을 돌려받습니다",
+        409
+      );
+    keys.forEach((k) => inflight.add(k));
+    try {
+      return await confirmPayment({ merchant, intent, cartMandate, iHash, payment });
+    } finally {
+      keys.forEach((k) => inflight.delete(k));
+    }
+  }
+
+  // ── 결정론 정책 검증 (결제 이전 프리체크 — 실패 시 자금 이동 자체가 없음)
   const spentMicro = db.mandateSpend[iHash] ?? 0;
   const policy = validatePolicy({ intent, cart: cartMandate, merchant, spentMicro });
   if (!policy.ok)
     return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
 
-  const payment = parsePaymentHeader(req.headers.get("X-PAYMENT"));
-
   // ── 1차 호출: 402 + PaymentRequirements
-  if (!payment) {
-    const payToB58 = await ensurePayTo(merchant.walletPubB58);
-    const nonce = newId("ord");
-    mutateDB((d) => {
-      d.pendingOrders = d.pendingOrders.filter((p) => Date.now() < p.expiresAt);
-      d.pendingOrders.push({
-        nonce,
-        payToB58,
-        merchantId: merchant.id,
-        items: cartMandate.items.map((i) => ({ itemId: i.itemId, qty: i.qty })),
-        totalMicro: cartMandate.totalMicro,
-        intentHash: iHash,
-        agentPubB58: intent.agentPubB58,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + PENDING_TTL_MS,
-      });
-    });
-    const requirements = buildRequirements({
-      network: db.mode === "sandbox" ? "sandbox" : "solana-devnet",
-      mintB58: db.mintB58!,
-      payToB58,
-      amountMicro: cartMandate.totalMicro,
+  const payToB58 = await ensurePayTo(merchant.walletPubB58);
+  const nonce = newId("ord");
+  mutateDB((d) => {
+    d.pendingOrders = d.pendingOrders.filter((p) => Date.now() < p.expiresAt);
+    d.pendingOrders.push({
       nonce,
+      payToB58,
+      merchantId: merchant.id,
+      items: cartMandate.items.map((i) => ({ itemId: i.itemId, qty: i.qty })),
+      totalMicro: cartMandate.totalMicro,
+      intentHash: iHash,
+      agentPubB58: intent.agentPubB58,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + PENDING_TTL_MS,
     });
-    return NextResponse.json(requirements, { status: 402 });
-  }
+  });
+  const requirements = buildRequirements({
+    network: db.mode === "sandbox" ? "sandbox" : "solana-devnet",
+    mintB58: db.mintB58!,
+    payToB58,
+    amountMicro: cartMandate.totalMicro,
+    nonce,
+  });
+  return NextResponse.json(requirements, { status: 402 });
+}
 
-  // ── 2차 호출: 온체인 지불 검증
+// ── 2차 호출: 온체인 지불 검증 → 재검사 후 커밋 (호출자가 in-flight 잠금을 잡고 있다)
+async function confirmPayment(params: {
+  merchant: Merchant;
+  intent: IntentMandate;
+  cartMandate: CartMandate;
+  iHash: string;
+  payment: PaymentHeader;
+}) {
+  const { merchant, intent, cartMandate, iHash, payment } = params;
+  const db = loadDB(); // 잠금을 잡은 뒤의 최신 상태로 판단한다
+  const spentMicro = db.mandateSpend[iHash] ?? 0;
+  const policy = validatePolicy({
+    intent,
+    cart: cartMandate,
+    merchant: db.merchants.find((x) => x.id === merchant.id) ?? merchant,
+    spentMicro,
+  });
+  if (!policy.ok)
+    return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
+
   const pending = db.pendingOrders.find(
     (p) => p.nonce === payment.nonce && p.merchantId === merchant.id
   );
@@ -78,9 +133,6 @@ export async function POST(
     return reject("PAYMENT_EXPIRED", "결제 요청이 만료되었습니다");
   if (pending.intentHash !== iHash || pending.totalMicro !== cartMandate.totalMicro)
     return reject("PAYMENT_CART_CHANGED", "결제 요청 이후 카트가 변경되었습니다");
-  if (db.usedSigs.includes(payment.signature))
-    return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
-
   const verify = await verifyPayment({
     sig: payment.signature,
     payToB58: pending.payToB58,
@@ -90,7 +142,10 @@ export async function POST(
   if (!verify.ok) return reject("PAYMENT_AMOUNT_MISMATCH", "온체인 지불 검증 실패", verify.reason);
 
   // ── 커밋: 재고 차감 · 예산 집행 기록 · 주문/정산 원장
+  // 검증을 기다리는 동안 상태가 바뀌었을 수 있으므로 기록 직전에 다시 확인한다(check-and-set).
   const order = mutateDB((d) => {
+    if (d.usedSigs.includes(payment.signature)) return null;
+    if (!d.pendingOrders.some((p) => p.nonce === pending.nonce)) return null;
     const m = d.merchants.find((x) => x.id === merchant.id)!;
     for (const line of cartMandate.items) {
       const item = m.items.find((i) => i.id === line.itemId)!;
@@ -110,6 +165,7 @@ export async function POST(
       }),
       totalMicro: cartMandate.totalMicro,
       txSig: payment.signature,
+      nonce: pending.nonce,
       explorerUrl: explorerUrl(payment.signature),
       agentPubB58: intent.agentPubB58,
       intentHash: iHash,
@@ -131,10 +187,7 @@ export async function POST(
     });
     return o;
   });
-
-  // 머천트 서명 영수증 — 부인 불가능성
-  const receiptBody = { orderId: order.id, totalMicro: order.totalMicro, txSig: order.txSig };
-  const receiptSig = signPayload(receiptBody, merchant.walletSecretB58);
+  if (!order) return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
 
   // 검증 6단계 통과 내역 — UI 스텝퍼 시각화용
   const usd = (m: number) => (m / 1e6).toFixed(2);
@@ -154,7 +207,7 @@ export async function POST(
   ];
   return NextResponse.json({
     order,
-    receipt: { ...receiptBody, merchantPubB58: merchant.walletPubB58, sigB58: receiptSig },
+    receipt: receiptOf(order, merchant), // 머천트 서명 영수증 — 부인 불가능성
     verification,
   });
 }
