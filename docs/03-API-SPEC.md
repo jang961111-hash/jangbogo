@@ -9,7 +9,8 @@ Base: `/api`. 모든 응답 JSON. 에러: `{ error: { code, message } }`.
 → 201 `{ merchant }` (지갑 키페어 서버 생성, pubkey만 노출)
 
 ### GET /merchants → `{ merchants: [...] }`
-### GET /merchants/{id} → `{ merchant, orders, ledger }`
+
+(가맹점 단건 조회 API는 없다. 주문·원장은 `GET /state`로 조회한다.)
 
 ## 헤드리스 머천트 (에이전트용 공개 엔드포인트)
 
@@ -37,17 +38,20 @@ Body: `{ cart: {items:[{itemId, qty}]}, mandates: { intent: IntentMandate, cart:
     "asset": "<mockUsdcMint>", "amount": "12.500000", "payTo": "<merchantAta>",
     "nonce": "<orderNonce>", "memo": "<orderNonce>", "expiresInSec": 300 }] }
 ```
-2) 재요청 + `X-PAYMENT: base64(JSON{ signature, payer })` →
-   온체인 검증(금액·수취인·memo=nonce) + 정책 5단 검증 →
-   **200** `{ order: {..., txSig, explorerUrl}, receipt: { merchantSigned } }`
-   실패 → **403** `{ error: { code: MANDATE_* | PAYMENT_* } }`
+2) 재요청 + `X-PAYMENT: base64(JSON{ signature, payer, nonce })` →
+   mandate 서명 검증 → 정책 재검사 → 온체인 검증(금액·수취인·memo=nonce) → 기록 직전 재검사 →
+   **200** `{ order: {..., txSig, explorerUrl}, receipt: { merchantSigned }, verification[6] }`
+   이미 확정된 증빙을 같은 nonce로 재전송 → **200** `{ order, receipt, idempotentReplay: true }`
+   같은 증빙을 검증 중 → **409** `PAYMENT_IN_PROGRESS`
+   지불은 확인됐지만 재고 소진·만료로 확정 불가 → **409** `PAYMENT_RECEIVED_UNCONFIRMED` (`unconfirmedPayments`에 기록)
+   그 밖의 실패 → **403** `{ error: { code: MANDATE_* | CART_* | PAYMENT_* } }`
 
 ## 에이전트·시스템
 
 ### POST /agent/run  (SSE 스트림)
-Body: `{ goal, categories[], budgetUsdc, maxUnitPriceUsdc?, expiresInDays }`
+Body: `{ goal, category, qty, budgetUsdc, maxUnitPriceUsdc?, scenario }` — `scenario`: `normal` | `over_budget` | `expired` | `out_of_scope`
 → `text/event-stream`: `{step, level, message, data?}` 이벤트 연쇄.
-단계: `setup → mandate_issued → discover → quote(가맹점별) → decide → pay → x402_retry → receipt → done|blocked`
+단계: `setup → mandate_issued → discover → quote(가맹점별) → decide → pay → x402 → pay → receipt → done|blocked`
 
 ### POST /setup
 devnet 부트스트랩(멱등): payer airdrop → mock USDC mint → buyer 지갑 충전.

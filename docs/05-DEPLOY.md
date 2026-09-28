@@ -10,7 +10,7 @@ npm run dev        # http://localhost:3402
 첫 접속 시 자동으로 `/api/setup`이 실행된다:
 1. payer·principal·에이전트 지갑 키 생성 (`data/` — gitignore)
 2. devnet airdrop 시도 → mock USDC mint 발행(운영진 공식 권장 방식) → 에이전트 지갑에 1,000 USDC 충전
-3. faucet 한도(429) 시 **sandbox 모드로 자동 폴백** — 동일 코드 경로, UI에 모드 배지 명시
+3. faucet 한도(429) 시 **sandbox 모드로 자동 폴백** — 인터페이스는 같지만 전송·검증은 파일 DB 안의 모의 원장으로 처리하는 별도 분기, UI에 모드 배지 명시
 
 ### devnet 전환 (faucet 한도에 걸린 경우)
 - https://faucet.solana.com 에서 payer 주소로 devnet SOL 전송 (주소는 `data/db.json`의 `payer.pubB58`)
@@ -47,5 +47,5 @@ gcloud run deploy jangbogo \
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `GEMINI_API_KEY` | (없음) | 있으면 의사결정 사유를 Gemini가 생성, 없으면 결정론 폴백 |
-| `GEMINI_MODEL` | gemini-2.5-flash | 사유 생성 모델 |
+| `GEMINI_MODEL` | gemini-flash-latest | 사유 생성 모델 (AI Studio 경로) |
 | `SOLANA_RPC_URL` | api.devnet.solana.com | RPC 교체(Helius 등) |
