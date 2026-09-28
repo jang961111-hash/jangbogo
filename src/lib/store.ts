@@ -121,17 +121,24 @@ const EMPTY: DB = {
 };
 
 export function loadDB(): DB {
+  let raw: string;
   try {
-    const raw = fs.readFileSync(path.join(dataDir(), "db.json"), "utf-8");
-    return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
-  } catch {
-    return structuredClone(EMPTY);
+    raw = fs.readFileSync(path.join(dataDir(), "db.json"), "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(EMPTY); // 첫 기동
+    throw e;
   }
+  // 파싱 실패는 빈 DB로 대체하지 않는다(fail-closed) — 대체하면 usedSigs가 비어 리플레이 방어가 사라진다
+  return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
 }
 
 export function saveDB(db: DB): void {
   fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(path.join(dataDir(), "db.json"), JSON.stringify(db, null, 2));
+  // 임시 파일에 다 쓴 뒤 rename으로 교체 — 쓰는 도중 죽어도 db.json은 이전 내용 그대로 남는다
+  const target = path.join(dataDir(), "db.json");
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  fs.renameSync(tmp, target);
 }
 
 export function mutateDB<T>(fn: (db: DB) => T): T {
