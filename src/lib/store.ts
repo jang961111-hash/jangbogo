@@ -59,6 +59,20 @@ export interface PendingOrder {
   expiresAt: number;
 }
 
+// 지불은 온체인에서 확인됐지만 주문을 확정하지 못한 건 (재고 소진·402 만료 등).
+// 조용히 거절하면 돈만 이동한 흔적이 사라지므로 따로 기록한다. 환불은 수동 처리(자동화 범위 밖).
+export interface UnconfirmedPayment {
+  id: string;
+  txSig: string;
+  nonce: string;
+  merchantId: string;
+  intentHash: string;
+  amountMicro: number;
+  reason: string; // 확정 불가 사유 코드 (예: CART_STOCK_INSUFFICIENT, PAYMENT_EXPIRED)
+  status: "paid_unconfirmed";
+  recordedAt: number;
+}
+
 export interface KeyRec {
   pubB58: string;
   secretB58: string;
@@ -85,6 +99,7 @@ export interface DB {
   mandateSpend: Record<string, number>; // intentHash → 누적 micro
   usedSigs: string[];
   pendingOrders: PendingOrder[];
+  unconfirmedPayments: UnconfirmedPayment[];
   sandbox: { balances: Record<string, number>; txs: SandboxTx[] };
 }
 
@@ -101,6 +116,7 @@ const EMPTY: DB = {
   mandateSpend: {},
   usedSigs: [],
   pendingOrders: [],
+  unconfirmedPayments: [],
   sandbox: { balances: {}, txs: [] },
 };
 

@@ -209,3 +209,59 @@ describe("견적 라우트 (A2A)", () => {
     expect(miss).toHaveLength(0);
   });
 });
+
+describe("지불됨·미확정 — 지불 확인 뒤 확정할 수 없으면 조용히 거절하지 않고 기록한다", () => {
+  it("재고가 먼저 소진되면 두 번째 지불은 PAYMENT_RECEIVED_UNCONFIRMED로 기록된다", async () => {
+    const a = scenario(1000);
+    mutateDB((d) => {
+      d.merchants.find((x) => x.id === a.m.id)!.items.find((i) => i.id === a.item.id)!.stock = QTY;
+    });
+    const b = scenario(1000);
+    const bodyA = a.body();
+    const bodyB = b.body();
+    const pa = await requestAndPay(a, bodyA);
+    const pb = await requestAndPay(b, bodyB);
+    expect(pb.first.status).toBe(402); // 재고는 예약하지 않는다 → 둘 다 402를 받고 지불한다
+
+    expect((await buy(a.m.id, bodyA, pa.xpay!)).status).toBe(200);
+    const rb = await buy(b.m.id, bodyB, pb.xpay!);
+    expect(rb.status).toBe(409);
+    expect(rb.json.error.code).toBe("PAYMENT_RECEIVED_UNCONFIRMED");
+
+    const db = loadDB();
+    expect(db.unconfirmedPayments).toHaveLength(1);
+    const rec = db.unconfirmedPayments[0];
+    expect(rec).toMatchObject({ txSig: pb.sig, amountMicro: pb.paidMicro, reason: "CART_STOCK_INSUFFICIENT", status: "paid_unconfirmed" });
+    expect(db.orders.filter((o) => o.txSig === pb.sig)).toHaveLength(0);
+
+    // 같은 증빙 재전송 → 같은 기록을 다시 알려준다 (새 기록·주문 없음)
+    const again = await buy(b.m.id, bodyB, pb.xpay!);
+    expect(again.status).toBe(409);
+    expect(again.json.unconfirmedPayment.id).toBe(rec.id);
+    expect(loadDB().unconfirmedPayments).toHaveLength(1);
+  });
+
+  it("402가 만료된 뒤 도착한 지불도 검증되면 미확정으로 기록된다", async () => {
+    const s = scenario(1000);
+    const body = s.body();
+    const p = await requestAndPay(s, body);
+    mutateDB((d) => {
+      for (const x of d.pendingOrders) x.expiresAt = Date.now() - 1;
+    });
+    const r = await buy(s.m.id, body, p.xpay!);
+    expect(r.status).toBe(409);
+    expect(r.json.unconfirmedPayment).toMatchObject({ txSig: p.sig, reason: "PAYMENT_EXPIRED" });
+  });
+
+  it("검증에 실패한 지불(과소지불)은 기록하지 않고 기존대로 거절한다", async () => {
+    const s = scenario(1000);
+    const body = s.body();
+    const r402 = await buy(s.m.id, body);
+    const req = (r402.json as X402Body).accepts[0];
+    const { sig } = await transferUsdc({ fromSecretB58: s.db.buyer!.secretB58, payToB58: req.payTo, amountMicro: req.amountMicro - 1, memo: req.memo });
+    const r = await buy(s.m.id, body, encodePaymentHeader({ signature: sig, payer: s.db.buyer!.pubB58, nonce: req.nonce }));
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe("PAYMENT_AMOUNT_MISMATCH");
+    expect(loadDB().unconfirmedPayments).toHaveLength(0);
+  });
+});

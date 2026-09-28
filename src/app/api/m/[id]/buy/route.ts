@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadDB, mutateDB, newId, type DB, type Merchant, type Order } from "@/lib/store";
+import { loadDB, mutateDB, newId, type DB, type Merchant, type Order, type UnconfirmedPayment } from "@/lib/store";
 import { validatePolicy, POLICY_MESSAGES, type PolicyFail } from "@/lib/policy";
 import { intentHash, signPayload, type IntentMandate, type CartMandate } from "@/lib/mandate";
 import { buildRequirements, parsePaymentHeader, type PaymentHeader } from "@/lib/x402";
@@ -9,6 +9,8 @@ import { feeMicro, microToKrw } from "@/lib/fx";
 export const dynamic = "force-dynamic";
 
 const PENDING_TTL_MS = 300_000;
+// 만료된 402도 1시간은 남겨 둔다 — 만료 직후 도착한 지불을 검증해 미확정으로 기록하려면 청구 정보가 필요하다
+const PENDING_RETAIN_MS = 3_600_000;
 
 // 결제 증빙 in-flight 잠금 — 같은 서명(또는 nonce)의 검증이 진행 중이면 뒤 요청은 409.
 // Node는 단일 스레드라 "검사 → 등록" 사이에 await가 없으면 한 프로세스 안에서 원자적이다.
@@ -26,6 +28,20 @@ function reservedMicro(d: DB, iHash: string, excludeNonce?: string) {
   return d.pendingOrders
     .filter((p) => p.intentHash === iHash && p.nonce !== excludeNonce && now < p.expiresAt)
     .reduce((sum, p) => sum + p.totalMicro, 0);
+}
+
+function unconfirmedResponse(rec: UnconfirmedPayment) {
+  return NextResponse.json(
+    {
+      error: {
+        code: "PAYMENT_RECEIVED_UNCONFIRMED",
+        message: "지불은 확인됐지만 주문을 확정하지 못했습니다",
+        detail: `사유 ${rec.reason} · 지불됨·미확정으로 기록됨 · 환불은 가맹점 수동 처리`,
+      },
+      unconfirmedPayment: rec,
+    },
+    { status: 409 }
+  );
 }
 
 function receiptOf(order: Order, merchant: Merchant) {
@@ -62,7 +78,13 @@ export async function POST(
       const prev = cur.orders.find(
         (o) => o.txSig === payment.signature && o.merchantId === merchant.id && o.nonce === payment.nonce
       );
-      if (!prev) return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
+      if (!prev) {
+        const rec = cur.unconfirmedPayments.find(
+          (u) => u.txSig === payment.signature && u.merchantId === merchant.id && u.nonce === payment.nonce
+        );
+        if (rec) return unconfirmedResponse(rec);
+        return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
+      }
       return NextResponse.json({ order: prev, receipt: receiptOf(prev, merchant), idempotentReplay: true });
     }
     const keys = [`sig:${payment.signature}`, `nonce:${payment.nonce}`];
@@ -98,7 +120,7 @@ export async function POST(
   const nonce = newId("ord");
   // ensurePayTo를 기다리는 동안 다른 402가 예약했을 수 있다 → 기록 직전에 최신 상태로 다시 검사
   const policy = mutateDB((d) => {
-    d.pendingOrders = d.pendingOrders.filter((p) => Date.now() < p.expiresAt);
+    d.pendingOrders = d.pendingOrders.filter((p) => Date.now() < p.expiresAt + PENDING_RETAIN_MS);
     const spentMicro = (d.mandateSpend[iHash] ?? 0) + reservedMicro(d, iHash);
     const m = d.merchants.find((x) => x.id === merchant.id) ?? merchant;
     const r = validatePolicy({ intent, cart: cartMandate, merchant: m, spentMicro });
@@ -146,38 +168,74 @@ async function confirmPayment(params: {
     merchant: db.merchants.find((x) => x.id === merchant.id) ?? merchant,
     spentMicro,
   });
-  if (!policy.ok)
-    return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
-
   const pending = db.pendingOrders.find(
     (p) => p.nonce === payment.nonce && p.merchantId === merchant.id
   );
-  if (!pending) return reject("PAYMENT_NONCE_UNKNOWN", "유효한 결제 요청(nonce)이 없습니다");
-  if (Date.now() > pending.expiresAt)
-    return reject("PAYMENT_EXPIRED", "결제 요청이 만료되었습니다");
-  if (pending.intentHash !== iHash || pending.totalMicro !== cartMandate.totalMicro)
+  // 결제 요청과 연결할 수 없는 증빙은 지불 여부와 무관하게 기존대로 거절
+  if (!pending || pending.intentHash !== iHash || pending.totalMicro !== cartMandate.totalMicro) {
+    if (!policy.ok)
+      return reject(policy.code!, POLICY_MESSAGES[policy.code as PolicyFail], policy.detail);
+    if (!pending) return reject("PAYMENT_NONCE_UNKNOWN", "유효한 결제 요청(nonce)이 없습니다");
     return reject("PAYMENT_CART_CHANGED", "결제 요청 이후 카트가 변경되었습니다");
+  }
+
+  // 402 이후 확정할 수 없게 된 사유(만료·재고 소진 등). 지불이 검증되면 거절 대신 미확정으로 기록한다
+  const blocker: { code: string; message: string; detail?: string } | null =
+    Date.now() > pending.expiresAt
+      ? { code: "PAYMENT_EXPIRED", message: "결제 요청이 만료되었습니다" }
+      : !policy.ok
+        ? { code: policy.code!, message: POLICY_MESSAGES[policy.code as PolicyFail], detail: policy.detail }
+        : null;
+
   const verify = await verifyPayment({
     sig: payment.signature,
     payToB58: pending.payToB58,
     amountMicro: pending.totalMicro,
     memo: pending.nonce,
   });
-  if (!verify.ok) return reject("PAYMENT_AMOUNT_MISMATCH", "온체인 지불 검증 실패", verify.reason);
+  if (!verify.ok) {
+    if (blocker) return reject(blocker.code, blocker.message, blocker.detail);
+    return reject("PAYMENT_AMOUNT_MISMATCH", "온체인 지불 검증 실패", verify.reason);
+  }
 
   // ── 커밋: 재고 차감 · 예산 집행 기록 · 주문/정산 원장
   // 검증을 기다리는 동안 상태가 바뀌었을 수 있으므로 기록 직전에 다시 확인한다(check-and-set).
-  const order = mutateDB((d) => {
-    if (d.usedSigs.includes(payment.signature)) return null;
-    if (!d.pendingOrders.some((p) => p.nonce === pending.nonce)) return null;
+  const result = mutateDB((d) => {
+    if (d.usedSigs.includes(payment.signature)) return { kind: "replayed" as const };
     const m = d.merchants.find((x) => x.id === merchant.id)!;
+    const reason =
+      blocker?.code ??
+      (!d.pendingOrders.some((p) => p.nonce === pending.nonce)
+        ? "PAYMENT_NONCE_UNKNOWN"
+        : cartMandate.items.some((l) => (m.items.find((i) => i.id === l.itemId)?.stock ?? 0) < l.qty)
+          ? "CART_STOCK_INSUFFICIENT"
+          : (d.mandateSpend[iHash] ?? 0) + cartMandate.totalMicro > intent.budgetMicro
+            ? "MANDATE_BUDGET_EXCEEDED"
+            : null);
+    // 지불된 증빙은 어느 쪽이든 사용 처리하고 402 예약을 푼다
+    d.usedSigs.push(payment.signature);
+    d.pendingOrders = d.pendingOrders.filter((p) => p.nonce !== pending.nonce);
+    if (reason) {
+      const rec: UnconfirmedPayment = {
+        id: newId("unconf"),
+        txSig: payment.signature,
+        nonce: pending.nonce,
+        merchantId: m.id,
+        intentHash: iHash,
+        amountMicro: pending.totalMicro,
+        reason,
+        status: "paid_unconfirmed",
+        recordedAt: Date.now(),
+      };
+      d.unconfirmedPayments.push(rec);
+      return { kind: "unconfirmed" as const, rec };
+    }
+
     for (const line of cartMandate.items) {
       const item = m.items.find((i) => i.id === line.itemId)!;
       item.stock -= line.qty;
     }
-    d.usedSigs.push(payment.signature);
     d.mandateSpend[iHash] = (d.mandateSpend[iHash] ?? 0) + cartMandate.totalMicro;
-    d.pendingOrders = d.pendingOrders.filter((p) => p.nonce !== pending.nonce);
 
     const o = {
       id: newId("order"),
@@ -209,9 +267,12 @@ async function confirmPayment(params: {
       netKrw: microToKrw(net),
       settledAt: Date.now(),
     });
-    return o;
+    return { kind: "order" as const, o };
   });
-  if (!order) return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
+  if (result.kind === "replayed")
+    return reject("PAYMENT_REPLAYED", "이미 사용된 트랜잭션입니다(리플레이 차단)");
+  if (result.kind === "unconfirmed") return unconfirmedResponse(result.rec);
+  const order = result.o;
 
   // 검증 6단계 통과 내역 — UI 스텝퍼 시각화용
   const usd = (m: number) => (m / 1e6).toFixed(2);
