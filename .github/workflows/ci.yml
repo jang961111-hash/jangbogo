@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # devnet·Gemini 등 외부 네트워크 없이 sandbox(모의 체인)로만 돈다
+      CHAIN_MODE: sandbox
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 타입 검사
+        run: npx tsc --noEmit
+      - name: 단위·결제 무결성 테스트 (vitest, 서버 불필요)
+        run: npm test
+      - name: 빌드
+        run: npm run build
+      - name: 통합 테스트 (sandbox 서버 기동)
+        env:
+          SBX_VERIFY_DELAY_MS: "50" # 검증 지연을 모사해 동시성 경합을 재현 (sandbox 전용 훅)
+        run: |
+          npx next start -p 3402 > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:3402/api/state > /dev/null && break; sleep 1; done
+          npm run test:integration
+      - name: 서버 로그
+        if: failure()
+        run: cat server.log || true
