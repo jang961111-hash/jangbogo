@@ -1,20 +1,40 @@
-# ⛵ 장보고 (JangBogo) — Agent Commerce Gateway
+# 장보고 (JangBogo): Agent Commerce Gateway
 
-> **"상품 목록만 붙여넣으면, 5분 만에 당신의 가게가 AI 에이전트에게 물건을 파는 헤드리스 상점이 됩니다."**
+> 상품 목록을 붙여넣으면 AI 에이전트가 결제할 수 있는 헤드리스 상점 엔드포인트가 발급됩니다(데모 기준).
 
-**Google x Solana AI Agentic Hackathon** 제출작 · Team **사공이(402)** · 트랙 B: Autonomous On-chain Settlement
+An agent-commerce gateway where a deterministic merchant-side policy engine, not the LLM, verifies an AI agent's on-chain payment in six steps (Solana devnet demo, no real payments).
+
+**Google x Solana AI Agentic Hackathon** 제출작, Team **사공이(402)**, 트랙 B: Autonomous On-chain Settlement
 
 | 제출물 | 링크 |
 |---|---|
-| 🌐 **라이브 데모** (심사 기간 상시 가동) | **https://jangbogo-748897460867.asia-northeast3.run.app** |
-| 📽️ **데모 영상** (2:40) | **https://youtu.be/ALdVyGhXPT8** |
-| 📊 프로젝트 소개서 (PDF 10장) | [`submission/장보고_소개서.pdf`](submission/장보고_소개서.pdf) |
-| 🔍 온체인 증빙 (실제 devnet 트랜잭션) | [Solana Explorer — Finalized·memo=주문 nonce](https://explorer.solana.com/tx/5yqKUxtroZiKAFfavT6sLZwgb9BuFxdP881vgtTKBBPPbrjezxoGyMFL4wZyzYYRDvBzxBA7qZTJp21hTNSVFPEq?cluster=devnet) |
-| 📚 설계·QA 문서 7종 | [`docs/00-CONTEXT.md`](docs/00-CONTEXT.md) ~ [`docs/06-QA-REPORT.md`](docs/06-QA-REPORT.md) |
+| **라이브 데모** (심사 기간 상시 가동) | **https://jangbogo-748897460867.asia-northeast3.run.app** |
+| **데모 영상** (2:40) | **https://youtu.be/ALdVyGhXPT8** |
+| 프로젝트 소개서 (PDF 10장) | [`submission/장보고_소개서.pdf`](submission/장보고_소개서.pdf) |
+| 온체인 증빙 (실제 devnet 트랜잭션) | [Solana Explorer, Finalized, memo=주문 nonce](https://explorer.solana.com/tx/5yqKUxtroZiKAFfavT6sLZwgb9BuFxdP881vgtTKBBPPbrjezxoGyMFL4wZyzYYRDvBzxBA7qZTJp21hTNSVFPEq?cluster=devnet) |
+| 설계, QA 문서 7종 | [`docs/00-CONTEXT.md`](docs/00-CONTEXT.md) ~ [`docs/06-QA-REPORT.md`](docs/06-QA-REPORT.md) |
+
+## 30초 요약
+
+| | 내용 |
+|---|---|
+| **문제** | 에이전트가 자율 구매를 해도 가맹점은 "이 주문을 믿어도 되는지" 알 수 없다. 카드 결제는 본인인증 단계에 사람이 필요해 에이전트가 끝까지 결제하기 어렵다. |
+| **해결** | 구매 에이전트가 가맹점 견적을 비교해 Solana devnet에서 x402 방식으로 결제하면, 가맹점 쪽 **결정론 정책 엔진**이 위임장 서명, 유효기간, 범위, 카트, 예산, 온체인 지불을 **6단계로 검증**한다. Gemini는 견적 비교와 선택 사유 서술에만 쓰고 결제 승인에는 개입하지 않는다. |
+| **결과** | 단위 11 + 통합 20 = **31/31 테스트 통과**, 예산 초과, 만료 위임장, 범위 밖, 과소지불, 리플레이 **5종 차단**을 테스트로 확인했다. |
+| **한계** | **Solana devnet 데모 범위이며 실제 결제는 없다.** 원화 정산은 고정 환율 시뮬레이션이고, 키는 데모용으로 서버가 보관한다([정직 고지](#정직-고지-데모-범위와-한계)). |
+
+## 내 역할
+
+**장병헌: 팀장, PM | 에이전트 설계, 프론트엔드, GCP 인프라** (팀 사공이(402), 등록 2인. 팀 구성은 [아래 표](#팀-사공이402))
+
+- 에이전트 설계: 에이전트가 하는 일(견적 비교, 사유 서술)과 맡기지 않는 일(결제 승인)을 나누고, 한도 집행을 정책 엔진에 둔 신뢰 경계를 정했다.
+- 프론트엔드: 에이전트 콘솔, 가맹점 온보딩, 주문과 정산 화면, 6단계 검증 스텝퍼.
+- GCP 인프라: Cloud Run과 Cloud Build 배포, Vertex AI 연동([`docs/05-DEPLOY.md`](docs/05-DEPLOY.md)).
+- 정책 엔진, x402 결제 검증, 온체인 연동 코드도 작성했다(이 저장소 커밋은 모두 장병헌 계정).
 
 ---
 
-## 한눈에 보기 — 자율 결제 + 판매자측 6단계 검증 (실시간)
+## 한눈에 보기: 자율 결제 + 판매자측 6단계 검증 (실시간)
 
 ![verify-stepper](docs/img/05-verify-stepper.gif)
 
@@ -24,21 +44,20 @@
 
 | 평가 기준 | 장보고의 대응 | 증빙 |
 |---|---|---|
-| **혁신성 / UX** | 경쟁작들이 구매자측 한도 지갑에 몰릴 때, 유일하게 **판매자측(가맹점 온보딩+검증)**을 공략. 코드 0줄 온보딩 + 검증 스텝퍼 시각화 | 위 GIF · [스크린샷](#스크린샷) |
-| **AI 활용도** | Gemini가 견적 비교·선택 사유 생성 (Cloud Run: **Vertex AI** `gemini-3-flash-preview`, 서비스 계정 인증). 단, 결제 승인은 LLM 불개입 — 이것이 설계의 핵심 | [`src/lib/llm.ts`](src/lib/llm.ts) |
-| **인프라 연동** | x402 스펙 준거 자체 구현 + Solana devnet USDC(SPL) 실전송 + AP2 준거 mandate + Cloud Run/Cloud Build | [`src/lib/x402.ts`](src/lib/x402.ts) · [`src/lib/chain.ts`](src/lib/chain.ts) |
-| **실제 구동** | devnet 실트랜잭션(Explorer Finalized) · 라이브 URL 상시 가동 · 실행 로그 스트리밍 | [tx 증빙](https://explorer.solana.com/tx/5yqKUxtroZiKAFfavT6sLZwgb9BuFxdP881vgtTKBBPPbrjezxoGyMFL4wZyzYYRDvBzxBA7qZTJp21hTNSVFPEq?cluster=devnet) · [라이브](https://jangbogo-748897460867.asia-northeast3.run.app) |
+| **혁신성 / UX** | 경쟁 제출작 분석상 구매자측 한도 지갑에 몰려 있어, 비어 있던 **판매자측(가맹점 온보딩+검증)**을 공략. 코드 0줄 온보딩 + 검증 스텝퍼 시각화 | 위 GIF, [스크린샷](#스크린샷) |
+| **AI 활용도** | Gemini가 견적 비교, 선택 사유 생성 (Cloud Run: **Vertex AI** `gemini-3-flash-preview`, 서비스 계정 인증). 단, 결제 승인은 LLM 불개입, 이것이 설계의 핵심 | [`src/lib/llm.ts`](src/lib/llm.ts) |
+| **인프라 연동** | x402 방식 402 응답과 결제 검증 코드 작성(라이브러리 없이 TypeScript로 68줄, `x402.ts`) + Solana devnet USDC(SPL) 실전송 + AP2 준거 mandate + Cloud Run/Cloud Build | [`src/lib/x402.ts`](src/lib/x402.ts), [`src/lib/chain.ts`](src/lib/chain.ts) |
+| **실제 구동** | devnet 실트랜잭션(Explorer Finalized), 라이브 URL 상시 가동, 실행 로그 스트리밍 | [tx 증빙](https://explorer.solana.com/tx/5yqKUxtroZiKAFfavT6sLZwgb9BuFxdP881vgtTKBBPPbrjezxoGyMFL4wZyzYYRDvBzxBA7qZTJp21hTNSVFPEq?cluster=devnet), [라이브](https://jangbogo-748897460867.asia-northeast3.run.app) |
 
-## 정량 지표 (실측)
+## 정량 지표 (데모 측정값, 반복 횟수 미기재)
 
 | 지표 | 값 |
 |---|---|
-| 자율 조달 풀사이클 (견적 비교→결제→서명 영수증) | **4.7 ~ 10.5초** (사람 승인 0회) |
-| 온체인 확정 | Solana devnet ~400ms · 트랜잭션 수수료 ◎0.000005 |
+| 자율 조달 풀사이클 (견적 비교→결제→서명 영수증) | **5.3 ~ 10.5초** (사람 승인 0회, 라이브 Cloud Run에서 devnet 실결제 풀사이클을 완주한 기록, [`docs/06-QA-REPORT.md`](docs/06-QA-REPORT.md)) |
 | 테스트 | **단위 11 + 통합 20 = 31/31 통과** |
-| 차단 검증된 공격/오류 | **5종** — 예산 초과 · 만료 위임장 · 범위 밖 · 과소지불 · 리플레이 |
-| 애플리케이션 코드 | TypeScript 약 2,000줄 (프레임워크 보일러플레이트 제외) |
-| 플랫폼 수수료 | 0.5% (자동 정산 원장 집계 구현) |
+| 차단 검증된 공격/오류 | **5종**, 예산 초과, 만료 위임장, 범위 밖, 과소지불, 리플레이 |
+| 애플리케이션 코드 | TypeScript 약 2,200줄 (src와 scripts 합계, 테스트 제외, 2026-11-20 집계) |
+| 플랫폼 수수료 | 0.5% (측정값이 아니라 설정값, 자동 정산 원장 집계 구현) |
 
 ## 스크린샷
 
@@ -46,7 +65,7 @@
 |---|---|
 | ![agent-run](docs/img/01-agent-run.png) | ![policy-block](docs/img/02-policy-block.png) |
 
-| 가맹점 온보딩 (코드 0줄 → 엔드포인트 발급) | 주문·정산 (tx 1:1 연결 · 수수료 0.5% · 원화 환산) |
+| 가맹점 온보딩 (코드 0줄 → 엔드포인트 발급) | 주문, 정산 (tx 1:1 연결, 수수료 0.5%, 원화 환산) |
 |---|---|
 | ![merchants](docs/img/03-merchants.png) | ![ledger](docs/img/04-ledger.png) |
 
@@ -54,36 +73,54 @@
 
 ## 왜 장보고인가
 
-- **에이전트 커머스의 병목은 판매자다.** x402·AP2가 표준화돼도, 국내 VAN 가맹점 33만 곳 중 에이전트의 자율 구매를 받을 수 있는 상점은 0곳이다. 카드 결제는 3DS 본인인증 루프에 사람이 필요해 에이전트는 구조적으로 결제할 수 없다.
-- **자율 결제가 열리는 순간 가맹점의 질문은 "이 에이전트를 믿어도 되나"다.** 장보고는 가맹점이 직접 위임장(AP2 mandate)을 검증하고, 예산·범위·만료를 어기는 주문을 결제 전에 거절한다.
-- **검증은 전부 결정론적 코드로.** 프롬프트 인젝션은 근본적으로 완전 방어가 불가능하므로(arXiv:2605.17634) 한도 집행은 LLM이 아닌 정책 엔진이 한다. LLM(Gemini)은 견적 비교 사유 서술에만 쓴다.
+- **에이전트 커머스의 병목은 판매자다.** x402, AP2가 표준화돼도, 국내 VAN/PG 가맹점은 33만 곳 이상이지만([`docs/01-PRD.md`](docs/01-PRD.md)) 에이전트 고객을 받을 방법이 없다. 카드 결제는 3DS 본인인증 루프에 사람이 필요해 에이전트는 구조적으로 결제할 수 없다.
+- **자율 결제가 열리는 순간 가맹점의 질문은 "이 에이전트를 믿어도 되나"다.** 장보고는 가맹점이 직접 위임장(AP2 mandate)을 검증하고, 예산, 범위, 만료를 어기는 주문을 결제 전에 거절한다.
+- **검증은 전부 결정론적 코드로.** AI 에이전트는 프롬프트 인젝션을 끝내 완전히 막지 못할 수 있다는 연구가 있어([arXiv:2605.17634](https://arxiv.org/abs/2605.17634), "AI Agents May Always Fall for Prompt Injections") 한도 집행은 LLM이 아닌 정책 엔진이 한다. LLM(Gemini)은 견적 비교 사유 서술에만 쓴다.
 
 ## 아키텍처
 
 ```mermaid
 flowchart LR
-    P["👤 사장님<br/>(Principal)<br/>─────<br/>Intent Mandate 서명<br/>예산·범위·만료"] -->|① 위임| A["🤖 구매 에이전트<br/>─────<br/>Gemini 의사결정<br/>USDC 지갑 보유"]
-    A <-->|② A2A 견적 교환| G["⛵ 장보고 게이트웨이<br/>─────<br/>결정론 정책 엔진<br/>6단계 검증·거절"]
+    P["👤 사장님<br/>(Principal)<br/>─────<br/>Intent Mandate 서명<br/>예산, 범위, 만료"] -->|① 위임| A["🤖 구매 에이전트<br/>─────<br/>Gemini 의사결정<br/>USDC 지갑 보유"]
+    A <-->|② A2A 견적 교환| G["⛵ 장보고 게이트웨이<br/>─────<br/>결정론 정책 엔진<br/>6단계 검증, 거절"]
     G --- M["🏪 가맹점 상점<br/>─────<br/>헤드리스 카탈로그<br/>x402 청구(HTTP 402)<br/>서명 영수증"]
     A -->|"④ x402: 402 → USDC 지불 → X-PAYMENT 재시도"| G
-    G -->|"⑤ tx 조회·검증<br/>금액·수취인·memo"| S["◎ Solana Devnet<br/>─────<br/>USDC TransferChecked<br/>memo = 주문 nonce"]
+    G -->|"⑤ tx 조회, 검증<br/>금액, 수취인, memo"| S["◎ Solana Devnet<br/>─────<br/>USDC TransferChecked<br/>memo = 주문 nonce"]
     A -->|"③ 온체인 전송"| S
 ```
 
-### 판매자측 결정론 검증 6단계 (신뢰 경계 — LLM 불개입)
+### 판매자측 결정론 검증 6단계 (신뢰 경계, LLM 불개입)
+
+```mermaid
+flowchart LR
+    R["주문 요청"] --> V1["1. 서명 검증"]
+    V1 --> V2["2. 유효기간"]
+    V2 --> V3["3. 범위"]
+    V3 --> V4["4. 카트 정합성"]
+    V4 --> V5["5. 누적 예산"]
+    V5 --> PAY["402 응답, USDC 지불"]
+    PAY --> V6["6. 온체인 지불 일치"]
+    V6 --> OK["주문 확정, 서명 영수증"]
+    V1 -.->|"위반 시 403, 자금 미이동"| X["거절"]
+    V2 -.-> X
+    V3 -.-> X
+    V4 -.-> X
+    V5 -.-> X
+    V6 -.->|"PAYMENT_* 거절"| X
+```
 
 | # | 단계 | 거절 코드 |
 |---|---|---|
-| 1 | 위임장·카트 **ed25519 서명** 검증 | `MANDATE_*_SIG_INVALID` |
+| 1 | 위임장, 카트 **ed25519 서명** 검증 | `MANDATE_*_SIG_INVALID` |
 | 2 | 위임 **유효기간** | `MANDATE_EXPIRED` |
 | 3 | 위임 **범위(카테고리)** | `MANDATE_SCOPE_VIOLATION` |
-| 4 | **카트 정합성** (단가·재고) | `CART_PRICE_MISMATCH` 등 |
+| 4 | **카트 정합성** (단가, 재고) | `CART_PRICE_MISMATCH` 등 |
 | 5 | **누적 예산 한도** (mandate별 지출 추적) | `MANDATE_BUDGET_EXCEEDED` |
-| 6 | **온체인 지불 일치** (금액·수취인·memo=nonce·리플레이) | `PAYMENT_*` |
+| 6 | **온체인 지불 일치** (금액, 수취인, memo=nonce, 리플레이) | `PAYMENT_*` |
 
 1~5는 **결제가 일어나기 전**에, 6은 온체인 검증 단계에서 거절된다. 전 과정이 UI 스텝퍼로 시각화된다.
 
-## 실제 구동 증빙 — 온체인에 이렇게 기록된다
+## 실제 구동 증빙: 온체인에 이렇게 기록된다
 
 영상 속 결제의 실제 devnet 트랜잭션. **TransferChecked 65.51724 USDC + Memo에 주문 nonce**가 박혀 주문↔결제가 1:1로 묶인다:
 
@@ -102,8 +139,8 @@ sequenceDiagram
     A->>S: USDC TransferChecked (memo = nonce) 직접 서명
     S-->>A: tx signature
     A->>G: POST /buy + X-PAYMENT {signature, nonce}
-    G->>S: getParsedTransaction — 금액·수취인·memo 대조
-    Note over G: 6단계 통과 → 재고 차감·예산 집행 기록
+    G->>S: getParsedTransaction, 금액, 수취인, memo 대조
+    Note over G: 6단계 통과 → 재고 차감, 예산 집행 기록
     G-->>A: 200 {order, 머천트 서명 영수증, verification[6]}
 ```
 
@@ -136,11 +173,11 @@ npm run dev        # → http://localhost:3402
 ```
 
 첫 접속 시 자동 부트스트랩: 키 생성 → devnet airdrop 시도 → **mock USDC 발행(운영진 권장 방식)** → 데모 가맹점 시딩.
-devnet faucet 한도(429) 시 **sandbox 모드로 자동 폴백**(동일 코드 경로, UI에 배지 표시)되며, payer 지갑에 devnet SOL을 넣으면 자동 복귀한다 — 상세: [`docs/05-DEPLOY.md`](docs/05-DEPLOY.md)
+devnet faucet 한도(429) 시 **sandbox 모드로 자동 폴백**(동일 코드 경로, UI에 배지 표시)되며, payer 지갑에 devnet SOL을 넣으면 자동 복귀한다, 상세: [`docs/05-DEPLOY.md`](docs/05-DEPLOY.md)
 
 ```bash
-npm test                  # 단위 11 + 결제 무결성 11 (동시 리플레이·예산 경합·지불 후 미확정, 서버 불필요)
-npm run test:integration  # 통합 24 케이스 (풀사이클 + 공격 시나리오, 서버 기동 상태에서)
+npm test                  # 단위 테스트와 결제 무결성 테스트 (동시 리플레이, 예산 경합, 지불 후 미확정, 서버 불필요)
+npm run test:integration  # 통합 케이스 (풀사이클 + 공격 시나리오, 서버 기동 상태에서)
 ```
 
 외부 네트워크 없이 돌리려면 `CHAIN_MODE=sandbox`로 서버를 띄운다(CI와 같은 조건). 동시성 경합을 재현하려면 `SBX_VERIFY_DELAY_MS=50`을 함께 준다 — sandbox 모드에서만 동작하는 검증 지연 훅이다.
@@ -149,10 +186,10 @@ npm run test:integration  # 통합 24 케이스 (풀사이클 + 공격 시나리
 
 ### 데모 시나리오 (3분)
 
-1. **에이전트 콘솔** → `▶ 에이전트 실행` — mandate 발급 → 가맹점 견적 비교 → Gemini 사유 → x402 결제 → 서명 영수증까지 **사람 승인 0회, 5~10초**
-2. **네거티브 버튼 3종** — 예산 초과·만료·범위 밖이 **결제 이전에** 차단되는 것을 스텝퍼로 확인 (자금 미이동)
-3. **주문·정산 탭** — tx 해시 클릭 → Solana Explorer에서 Finalized·memo 확인
-4. **가맹점 탭** — 새 가게를 직접 온보딩해 즉시 엔드포인트 발급
+1. **에이전트 콘솔** → `▶ 에이전트 실행`, mandate 발급 → 가맹점 견적 비교 → Gemini 사유 → x402 결제 → 서명 영수증까지 **사람 승인 0회, 5~10초**
+2. **네거티브 버튼 3종**, 예산 초과, 만료, 범위 밖이 **결제 이전에** 차단되는 것을 스텝퍼로 확인 (자금 미이동)
+3. **주문, 정산 탭**, tx 해시 클릭 → Solana Explorer에서 Finalized, memo 확인
+4. **가맹점 탭**, 새 가게를 직접 온보딩해 즉시 엔드포인트 발급
 
 ## API (헤드리스 머천트 엔드포인트)
 
@@ -169,27 +206,29 @@ npm run test:integration  # 통합 24 케이스 (풀사이클 + 공격 시나리
 
 ## 기술 스택
 
-**AI·Google Cloud** — Gemini(Cloud Run: Vertex AI `gemini-3-flash-preview` / 로컬: AI Studio API, 폴백 체인: Vertex → API 키 → 결정론) · Cloud Run + Cloud Build (asia-northeast3)
-**Blockchain** — Solana Devnet(@solana/web3.js, SPL Token, mock USDC 자체 발행) · x402 스펙 준거 자체 구현 · AP2 준거 Intent/Cart Mandate(ed25519·tweetnacl) · A2A 메시지 구조
-**App·품질** — Next.js 15(TypeScript) · Tailwind CSS · vitest(단위 11+통합 20) · Playwright(데모 영상 자동 촬영)
+**AI, Google Cloud**, Gemini(Cloud Run: Vertex AI `gemini-3-flash-preview` / 로컬: AI Studio API, 폴백 체인: Vertex → API 키 → 결정론), Cloud Run + Cloud Build (asia-northeast3)
+**Blockchain**, Solana Devnet(@solana/web3.js, SPL Token, mock USDC 자체 발행), x402 방식 응답과 검증 코드(라이브러리 없이 작성), AP2 준거 Intent/Cart Mandate(ed25519, tweetnacl), A2A 메시지 구조
+**App, 품질**, Next.js 15(TypeScript), Tailwind CSS, vitest(단위 11+통합 20)
 
-## 팀 — 사공이(402)
+## 팀 사공이(402)
 
-> "402"는 이 해커톤의 심장인 HTTP **402** Payment Required, 한국어로 읽으면 뱃**사공** — 장보고(해상 무역왕) 세계관의 노를 젓는 사람들.
+> "402"는 이 해커톤의 심장인 HTTP **402** Payment Required, 한국어로 읽으면 뱃**사공**, 장보고(해상 무역왕) 세계관의 노를 젓는 사람들.
+
+팀 등록 2인.
 
 | 이름 | 역할 |
 |---|---|
-| **장병헌** | 팀장 · PM/풀스택 — 에이전트 설계 · 프론트엔드 · GCP 인프라 |
-| **김지원** | 백엔드 — 온체인 결제 · AP2/x402 검증 엔진 · QA |
+| **장병헌** | 팀장, PM, 기획, 설계, 구현(에이전트, 정책 엔진, 결제 검증, 프론트엔드, GCP 인프라) |
+| **김지원** | 팀원 |
 
 ## 정직 고지 (데모 범위와 한계)
 
 - devnet 데모이며 원화 정산은 고정 환율(1 USDC=1,450 KRW) 시뮬레이션이다. pay.sh는 호환 설계만 반영(실연동 아님), AP2/A2A는 스펙 구조 준거 축약 구현이다.
-- **키 관리**: 데모에서는 원클릭 시연을 위해 principal(사장)·에이전트 키를 서버가 생성·보관한다. 실서비스 설계는 사장 지갑(Phantom 등)이 Intent Mandate를 직접 서명하고 에이전트 키는 비수탁 지갑으로 분리하는 것이며, 검증 로직([`policy.ts`](src/lib/policy.ts))은 키 보관 위치와 무관하게 동일하게 동작한다.
-- **상태 저장**: 데모는 파일 DB(인스턴스 생명주기 동안 유지)를 쓴다. 인스턴스가 재시작해도 리플레이 공격은 뚫리지 않는다 — 결제는 온체인 memo가 **매 주문의 신규 nonce**와 일치해야 하므로, 과거 서명은 어떤 새 주문과도 매칭되지 않는다 (2차 방어: 서명 재사용 차단 목록). 프로덕션 전환 시 Firestore 교체 경로는 [`docs/05-DEPLOY.md`](docs/05-DEPLOY.md) 참조.
-- **동시 요청 (2026-09 수정)**: 해커톤 제출본은 같은 결제 증빙을 동시에 보내면 1회 지불로 주문이 여러 건 확정되고(검증 지연 650ms에서 최대 10건), 위임 예산 100 USDC로 327.59 USDC까지 확정되는 경합이 있었다. 같은 위임장으로 받은 402를 차례로 지불하면 두 번째부터 돈만 이동하고 거절되는 문제도 있었다. 지금은 ① 결제 증빙(서명·nonce)을 검증 전에 선점하고 ② 402 발급 때 위임 예산을 예약하며 ③ 지불은 확인됐지만 확정할 수 없는 건은 `unconfirmedPayments`에 "지불됨·미확정"으로 기록한다(환불은 수동). **단, 선점 잠금과 파일 DB는 프로세스 하나 기준이다.** 인스턴스가 여러 개면 공유 DB의 유니크 제약·트랜잭션이 필요하다.
-- 개발 중 에이전트가 "원두 조달" 지시에 방금 온보딩된 최저가 베이글을 사 온 사고가 있었고, 그 사건으로 견적 매칭·범위 검증을 재설계했다 — 네거티브 테스트 7종은 그렇게 나왔다.
+- **키 관리**: 데모에서는 원클릭 시연을 위해 principal(사장), 에이전트 키를 서버가 생성, 보관한다. 실서비스 설계는 사장 지갑(Phantom 등)이 Intent Mandate를 직접 서명하고 에이전트 키는 비수탁 지갑으로 분리하는 것이며, 검증 로직([`policy.ts`](src/lib/policy.ts))은 키 보관 위치와 무관하게 동일하게 동작한다.
+- **상태 저장**: 데모는 파일 DB(인스턴스 생명주기 동안 유지)를 쓴다. 인스턴스가 재시작해도 리플레이 공격은 뚫리지 않는다, 결제는 온체인 memo가 **매 주문의 신규 nonce**와 일치해야 하므로, 과거 서명은 어떤 새 주문과도 매칭되지 않는다 (2차 방어: 서명 재사용 차단 목록). 프로덕션 전환 시 Firestore 교체 경로는 [`docs/05-DEPLOY.md`](docs/05-DEPLOY.md) 참조.
+- **동시 요청 (2026-09 수정)**: 해커톤 제출본은 같은 결제 증빙을 동시에 보내면 1회 지불로 주문이 여러 건 확정되고(검증 지연 650ms에서 최대 10건), 위임 예산 100 USDC로 327.59 USDC까지 확정되는 경합이 있었다. 같은 위임장으로 받은 402를 차례로 지불하면 두 번째부터 돈만 이동하고 거절되는 문제도 있었다. 지금은 ① 결제 증빙(서명, nonce)을 검증 전에 선점하고 ② 402 발급 때 위임 예산을 예약하며 ③ 지불은 확인됐지만 확정할 수 없는 건은 `unconfirmedPayments`에 "지불됨, 미확정"으로 기록한다(환불은 수동). **단, 선점 잠금과 파일 DB는 프로세스 하나 기준이다.** 인스턴스가 여러 개면 공유 DB의 유니크 제약과 트랜잭션이 필요하다.
+- 개발 중 에이전트가 "원두 조달" 지시에 방금 온보딩된 최저가 베이글을 사 온 사고가 있었고, 이후 맞는 상품이 없으면 빈 견적을 돌려주도록 수정했다.
 
 ## 수익모델
 
-거래 수수료 **0.5%** (카드 대비 1/3~1/6) + 정산 SaaS(월 29,000원) + 온체인 매출 이력 기반 **선정산(팩토링)** 확장 — 상세는 [소개서](submission/장보고_소개서.pdf) 참조.
+거래 수수료 **0.5%** (카드 대비 1/3~1/6, 출처는 [`docs/01-PRD.md`](docs/01-PRD.md)의 기획 서술이며 측정값이 아니다) + 정산 SaaS(월 29,000원) + 온체인 매출 이력 기반 **선정산(팩토링)** 확장, 상세는 [소개서](submission/장보고_소개서.pdf) 참조.
